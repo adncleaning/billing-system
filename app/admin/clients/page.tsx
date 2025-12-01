@@ -26,6 +26,7 @@ interface Client {
     relationship?: string
     phone?: string
     email?: string
+    identification?: string   // 👈 NUEVO
   }
   createdAt: string
   createdBy?: {
@@ -52,6 +53,7 @@ export default function ClientsPage() {
       relationship: "",
       phone: "",
       email: "",
+      identification: "", // 👈 NUEVO
     },
   })
   const [submitting, setSubmitting] = useState(false)
@@ -94,7 +96,7 @@ export default function ClientsPage() {
           email: "",
           phone: "",
           address: { street: "", city: "", state: "", zipCode: "" },
-          beneficiary: { name: "", relationship: "", phone: "", email: "" },
+          beneficiary: { name: "", relationship: "", phone: "", email: "", identification: "" },
         })
         fetchClients()
       } else {
@@ -323,6 +325,18 @@ export default function ClientsPage() {
                   className="input"
                 />
               </div>
+            </div>
+            <div className="mt-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Beneficiary Identification
+              </label>
+              <input
+                type="text"
+                value={formData.beneficiary.identification}
+                onChange={(e) => updateFormData("beneficiary.identification", e.target.value)}
+                className="input"
+                placeholder="e.g., ID number, passport, etc."
+              />
             </div>
           </div>
 

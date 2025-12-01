@@ -8,7 +8,7 @@ import { useToast } from "@/contexts/ToastContext"
 import { Users, User, Phone, Mail, Heart, Save } from "lucide-react"
 
 export default function BeneficiaryPage() {
-  const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.adncleaningservices.com/v1/api"
+  const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.adncleaningservices.co.uk/v1/api/"
   const { user, token } = useAuth()
   const { showToast } = useToast()
   const [loading, setLoading] = useState(false)

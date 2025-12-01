@@ -8,7 +8,7 @@ import Table from "@/components/Table"
 import Modal from "@/components/Modal"
 import { Plus, Calculator, DollarSign, Calendar, FileText, Banknote, CreditCard, Smartphone, Check } from "lucide-react"
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.adncleaningservices.com/v1/api"
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.adncleaningservices.co.uk/v1/api/"
 
 interface Payment {
   _id: string

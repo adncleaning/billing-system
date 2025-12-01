@@ -28,7 +28,7 @@ npm install
 
 3. **Configure API endpoint:**
    - Update the API URL in `contexts/AuthContext.tsx` and other components
-   - Replace `https://api.adncleaningservices.com/v1/api/` with your actual API URL
+   - Replace `https://api.adncleaningservices.co.uk/v1/api//` with your actual API URL
 
 4. **Run the development server:**
 \`\`\`bash
