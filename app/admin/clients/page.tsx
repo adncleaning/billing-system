@@ -2,19 +2,21 @@
 
 import type React from "react"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { useAuth, Api } from "@/contexts/AuthContext"
 import { useToast } from "@/contexts/ToastContext"
 import { useRouter } from "next/navigation"
 import Table from "@/components/Table"
 import Modal from "@/components/Modal"
-import { Plus, Mail, Phone, User } from "lucide-react"
+import { Plus, Mail, Phone, User, FileText } from "lucide-react"
+import SignatureCanvas from "react-signature-canvas"
 
 interface Client {
   _id: string
   name: string
   email: string
   phone: string
+  identification: ""
   address: {
     street?: string
     city?: string
@@ -42,6 +44,7 @@ export default function ClientsPage() {
     name: "",
     email: "",
     phone: "",
+    identification: "", // 👈 NUEVO
     address: {
       street: "",
       city: "",
@@ -60,6 +63,12 @@ export default function ClientsPage() {
   const { token } = useAuth()
   const { showToast } = useToast()
   const router = useRouter()
+  const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.adncleaningservices.co.uk/v1/api/"
+  const [showCertificateModal, setShowCertificateModal] = useState(false)
+  const [selectedClientId, setSelectedClientId] = useState<string | null>(null)
+  const [attachPassport, setAttachPassport] = useState<boolean>(true)
+  const sigCanvasRef = useRef<SignatureCanvas | null>(null)
+  const [generating, setGenerating] = useState(false)
 
   const fetchClients = async () => {
     try {
@@ -75,6 +84,72 @@ export default function ClientsPage() {
       setLoading(false)
     }
   }
+  const generateCertificate = async () => {
+    try {
+      if (!selectedClientId) return
+
+      let authToken = token
+      if (!authToken && typeof window !== "undefined") {
+        authToken = localStorage.getItem("token")
+      }
+
+      if (!authToken) {
+        showToast("Sesión no válida. Inicia sesión nuevamente.", "error")
+        return
+      }
+
+      if (!sigCanvasRef.current || sigCanvasRef.current.isEmpty()) {
+        showToast("Por favor firma antes de generar el documento.", "error")
+        return
+      }
+
+      setGenerating(true)
+
+      const signatureDataUrl = sigCanvasRef.current.toDataURL("image/png")
+
+      const res = await fetch(`${API_URL}/clients/${selectedClientId}/certificate`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `jwt ${authToken}`,
+        },
+        body: JSON.stringify({
+          attachPassport,
+          signature: signatureDataUrl,
+        }),
+      })
+
+      if (!res.ok) {
+        if (res.status === 401) {
+          if (typeof window !== "undefined") {
+            localStorage.removeItem("token")
+            localStorage.removeItem("user")
+            router.push("/")
+          }
+        }
+        throw new Error("Error al generar la carta")
+      }
+
+      const blob = await res.blob()
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement("a")
+      link.href = url
+      link.download = `certificado_${selectedClientId}.pdf`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.URL.revokeObjectURL(url)
+
+      showToast("Carta generada correctamente", "success")
+      setShowCertificateModal(false)
+    } catch (error: any) {
+      console.error(error)
+      showToast(error.message || "Error al generar la carta", "error")
+    } finally {
+      setGenerating(false)
+    }
+  }
+
 
   useEffect(() => {
     if (token) {
@@ -95,6 +170,7 @@ export default function ClientsPage() {
           name: "",
           email: "",
           phone: "",
+          identification: "",    // 👈 NUEVO
           address: { street: "", city: "", state: "", zipCode: "" },
           beneficiary: { name: "", relationship: "", phone: "", email: "", identification: "" },
         })
@@ -166,6 +242,25 @@ export default function ClientsPage() {
       label: "Created",
       render: (value: string) => new Date(value).toLocaleDateString(),
     },
+    {
+      key: "actions",
+      label: "Actions",
+      render: (_: any, row: Client) => (
+        <button
+          type="button"
+          onClick={() => {
+            setSelectedClientId(row._id)
+            setAttachPassport(true) // por defecto "Sí"
+            setShowCertificateModal(true)
+          }}
+          className="inline-flex items-center text-sm text-blue-600 hover:underline"
+        >
+          <FileText className="h-4 w-4 mr-1" />
+          Generate letter
+        </button>
+      ),
+    }
+
   ]
 
   return (
@@ -226,16 +321,30 @@ export default function ClientsPage() {
               </div>
             </div>
 
-            <div className="mt-4">
-              <label className="block text-sm font-medium text-gray-700 mb-2">Phone *</label>
-              <input
-                type="tel"
-                value={formData.phone}
-                onChange={(e) => updateFormData("phone", e.target.value)}
-                className="input"
-                required
-              />
+            <div className="grid grid-cols-2 gap-4 mt-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Phone *</label>
+                <input
+                  type="tel"
+                  value={formData.phone}
+                  onChange={(e) => updateFormData("phone", e.target.value)}
+                  className="input"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Identification *</label>
+                <input
+                  type="text"
+                  value={formData.identification}
+                  onChange={(e) => updateFormData("identification", e.target.value)}
+                  className="input"
+                  required
+                />
+              </div>
             </div>
+
 
             <div className="grid grid-cols-2 gap-4 mt-4">
               <div>
@@ -350,6 +459,87 @@ export default function ClientsPage() {
           </div>
         </form>
       </Modal>
+      {/* Modal para generar carta */}
+      <Modal
+        isOpen={showCertificateModal}
+        onClose={() => setShowCertificateModal(false)}
+        title="Generate Certificate"
+        size="large"
+      >
+        <div className="space-y-6">
+          <div>
+            <h3 className="text-lg font-medium text-gray-900 mb-2">
+              Passport attachment
+            </h3>
+            <p className="text-sm text-gray-600 mb-3">
+              Indica si adjuntaste una copia legible del pasaporte o cédula.
+            </p>
+            <div className="flex items-center space-x-6">
+              <label className="flex items-center space-x-2">
+                <input
+                  type="radio"
+                  checked={attachPassport === true}
+                  onChange={() => setAttachPassport(true)}
+                />
+                <span>Sí, está adjunto</span>
+              </label>
+              <label className="flex items-center space-x-2">
+                <input
+                  type="radio"
+                  checked={attachPassport === false}
+                  onChange={() => setAttachPassport(false)}
+                />
+                <span>No está adjunto</span>
+              </label>
+            </div>
+          </div>
+
+          <div>
+            <h3 className="text-lg font-medium text-gray-900 mb-2">Signature</h3>
+            <p className="text-sm text-gray-600 mb-3">
+              Firma dentro del recuadro. Esta firma se insertará en el documento.
+            </p>
+            <div className="border border-gray-300 rounded-md p-2 bg-white">
+              {/* Signature canvas */}
+              <SignatureCanvas
+                ref={sigCanvasRef}
+                penColor="black"
+                canvasProps={{
+                  width: 500,
+                  height: 150,
+                  className: "w-full h-40",
+                }}
+              />
+            </div>
+            <button
+              type="button"
+              className="mt-2 text-sm text-gray-600 hover:underline"
+              onClick={() => sigCanvasRef.current?.clear()}
+            >
+              Clear signature
+            </button>
+          </div>
+
+          <div className="flex justify-end space-x-4 pt-4 border-t border-gray-200">
+            <button
+              type="button"
+              onClick={() => setShowCertificateModal(false)}
+              className="btn-outline"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={generateCertificate}
+              className="btn-primary"
+              disabled={generating}
+            >
+              {generating ? "Generating..." : "Generate PDF"}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
     </div>
   )
 }
