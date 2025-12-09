@@ -608,7 +608,7 @@ export default function InvoicesPage() {
                 <span className="text-sm">eBay UK Invoice</span>
               </label>
 
-              <label className="flex items-center space-x-2">
+              {/* <label className="flex items-center space-x-2">
                 <input
                   type="radio"
                   value="barnardos"
@@ -648,7 +648,7 @@ export default function InvoicesPage() {
                 <span className="text-sm">
                   St Christopher&apos;s Charity Receipt
                 </span>
-              </label>
+              </label> */}
             </div>
           </div>
 
