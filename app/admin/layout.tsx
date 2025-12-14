@@ -51,6 +51,16 @@ export default function AdminLayout({
       icon: <FileText className="h-5 w-5" />,
     },
     {
+      href: "/admin/tariffs",
+      label: "Tariffs",
+      icon: <FileText className="h-5 w-5" />,
+    },
+    {
+      href: "/admin/guides",
+      label: "Guides",
+      icon: <FileText className="h-5 w-5" />,
+    },
+    {
       href: "/admin/payments",
       label: "Driver Payments",
       icon: <DollarSign className="h-5 w-5" />,
