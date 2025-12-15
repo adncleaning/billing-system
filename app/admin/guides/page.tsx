@@ -294,6 +294,16 @@ export default function GuidesPage() {
         }
     };
 
+    const openGuideLabelForPrint = async (guideId: string) => {
+        let authToken = token || localStorage.getItem("token");
+        const res = await fetch(`${API_URL}/guides/${guideId}/label`, {
+            headers: { Authorization: `jwt ${authToken}` },
+        });
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        window.open(url, "_blank");
+    };
+
 
 
     const columns = [
@@ -374,6 +384,15 @@ export default function GuidesPage() {
                     >
                         <FileText className="h-4 w-4 mr-1" />
                         View PDF
+                    </button>
+
+                    <button
+                        type="button"
+                        onClick={() => openGuideLabelForPrint(row._id)}
+                        className="inline-flex items-center text-sm text-blue-600 hover:underline"
+                    >
+                        <FileText className="h-4 w-4 mr-1" />
+                        Print Ticket
                     </button>
 
                     <button
