@@ -71,6 +71,11 @@ export default function AdminLayout({
       icon: <FileText className="h-5 w-5" />,
     },
     {
+      href: "/admin/bills",
+      label: "Bills",
+      icon: <DollarSign className="h-5 w-5" />,
+    },
+    {
       href: "/admin/payments",
       label: "Driver Payments",
       icon: <DollarSign className="h-5 w-5" />,
