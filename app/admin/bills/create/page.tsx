@@ -39,14 +39,17 @@ type GuideLite = {
   _id: string;
   number: string;
   recipientName?: string;
-  destination?: string; // address o país/dirección
+  destination?: string;
   weightKg?: number;
   pieces?: number;
   description?: string;
-  amount?: number; // backend ideal
-  guideTotal?: number; // compat
+  amount?: number;
+  guideTotal?: number;
   createdAt?: string;
+  invoiceId?: string;
+  invoice?: { _id: string };
 };
+
 
 type BillItemLine = {
   tempId: string;
@@ -112,7 +115,7 @@ async function apiFetch(path: string, options: RequestInit = {}, router?: any) {
       try {
         localStorage.removeItem("token");
         localStorage.removeItem("user");
-      } catch {}
+      } catch { }
       router.push("/");
     }
 
@@ -120,7 +123,7 @@ async function apiFetch(path: string, options: RequestInit = {}, router?: any) {
     try {
       const err = await res.json();
       msg = err?.message || msg;
-    } catch {}
+    } catch { }
     throw new Error(msg);
   }
 
@@ -183,6 +186,10 @@ export default function BillsCreatePage() {
   const [clients, setClients] = useState<ClientLite[]>([]);
   const [loadingClients, setLoadingClients] = useState(false);
   const [selectedClient, setSelectedClient] = useState<ClientLite | null>(null);
+
+  /** Invoice detected from selected guides */
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
+  const [updatingInvoice, setUpdatingInvoice] = useState(false);
 
   /** Bill header */
   const [billNumber, setBillNumber] = useState("");
@@ -316,6 +323,7 @@ export default function BillsCreatePage() {
     setSelectedGuideIds([]);
     setUnbilledGuides([]);
     setGuides([]);
+    setSelectedInvoiceId(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedClient?._id]);
 
@@ -431,36 +439,132 @@ export default function BillsCreatePage() {
 
   function includeSelectedGuides() {
     const selected = unbilledGuides.filter((g) => selectedGuideIds.includes(g._id));
+
+    // ✅ Detect invoiceId de la primer guía seleccionada
+    const firstInvoiceId = selected?.[0]?.invoiceId || selected?.[0]?.invoice?._id || null;
+
+    // ✅ Si las guías traen invoiceId, validamos consistencia
+    if (selected.length) {
+      const invoiceIds = selected
+        .map((g) => g.invoiceId || g.invoice?._id || null)
+        .filter(Boolean) as string[];
+
+      const unique = Array.from(new Set(invoiceIds));
+
+      // Si hay más de una invoice, no permitimos mezclar (o decides tú la regla)
+      if (unique.length > 1) {
+        setError("Las guías seleccionadas pertenecen a más de una factura (invoice). Selecciona guías de una sola factura.");
+        return;
+      }
+
+      setSelectedInvoiceId(unique[0] || firstInvoiceId); // ✅ guarda invoiceId
+    } else {
+      setSelectedInvoiceId(null);
+    }
+
+    // ✅ Mantiene lógica actual
     setGuides((prev) => {
       const map = new Map(prev.map((p) => [p._id, p]));
       selected.forEach((g) => map.set(g._id, g));
       return Array.from(map.values());
     });
+
     setSelectedGuideIds([]);
     setOpenGuidesModal(false);
   }
+  async function appendItemToInvoice(invoiceId: string, item: { description: string; quantity: number; unitPrice: number }) {
+    // 1) Trae invoice actual
+    const invRes = await apiFetch(`/invoices/${invoiceId}`, {}, router);
+    const invoice = invRes?.invoice || invRes?.data || invRes;
+
+    const currentItems = Array.isArray(invoice?.items) ? invoice.items : [];
+
+    // 2) Construye items nuevos con total
+    const newItem = {
+      description: item.description,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      total: Number(item.quantity) * Number(item.unitPrice),
+    };
+
+    const mergedItems = [...currentItems, newItem];
+
+    // 3) Recalcula subtotal y total (manteniendo tax si existe)
+    const subtotal = mergedItems.reduce((sum: number, it: any) => sum + Number(it.total || 0), 0);
+    const tax = Number(invoice?.tax || 0);
+    const total = subtotal + tax;
+
+    // 4) Update invoice
+    return apiFetch(
+      `/invoices/${invoiceId}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: mergedItems,
+          subtotal,
+          total,
+        }),
+      },
+      router
+    );
+  }
+
+
 
   function removeGuide(id: string) {
     setGuides((prev) => prev.filter((g) => g._id !== id));
   }
 
-  function addItemLine() {
+  async function addItemLine() {
+    setError(null);
+
     if (!newItem.description.trim()) {
       setError("El item manual requiere descripción.");
       return;
     }
-    setItems((prev) => [
-      ...prev,
-      {
-        tempId: uid("item"),
-        description: newItem.description.trim(),
-        quantity: Math.max(1, Number(newItem.quantity || 1)),
-        unitPrice: Number(newItem.unitPrice || 0),
-      },
-    ]);
-    setNewItem({ description: "", quantity: 1, unitPrice: 0 });
-    setOpenItemModal(false);
+
+    const invoiceId = selectedInvoiceId;
+
+    // ✅ Si hay guías seleccionadas pero no hay invoice, bloqueamos para evitar inconsistencias
+    if (guides.length > 0 && !invoiceId) {
+      setError("No se detectó la factura (invoice) asociada a las guías seleccionadas. Verifica que las guías tengan invoiceId.");
+      return;
+    }
+
+    const itemPayload = {
+      description: newItem.description.trim(),
+      quantity: Math.max(1, Number(newItem.quantity || 1)),
+      unitPrice: Number(newItem.unitPrice || 0),
+    };
+
+    try {
+      // ✅ 1) Actualiza invoice (si existe)
+      if (invoiceId) {
+        setUpdatingInvoice(true);
+        await appendItemToInvoice(invoiceId, itemPayload);
+      }
+
+      // ✅ 2) Mantiene tu lógica actual (agregar al bill local)
+      setItems((prev) => [
+        ...prev,
+        {
+          tempId: uid("item"),
+          description: itemPayload.description,
+          quantity: itemPayload.quantity,
+          unitPrice: itemPayload.unitPrice,
+        },
+      ]);
+
+      setNewItem({ description: "", quantity: 1, unitPrice: 0 });
+      setOpenItemModal(false);
+    } catch (e: any) {
+      setError(e?.message || "Error agregando item a la factura");
+    } finally {
+      setUpdatingInvoice(false);
+    }
   }
+
 
   function removeItem(tempId: string) {
     setItems((prev) => prev.filter((x) => x.tempId !== tempId));
@@ -570,9 +674,8 @@ export default function BillsCreatePage() {
                     return (
                       <li
                         key={c._id}
-                        className={`px-3 py-2 cursor-pointer border-b last:border-b-0 ${
-                          active ? "bg-sky-50" : "hover:bg-gray-50"
-                        }`}
+                        className={`px-3 py-2 cursor-pointer border-b last:border-b-0 ${active ? "bg-sky-50" : "hover:bg-gray-50"
+                          }`}
                         onClick={() => setSelectedClient(c)}
                       >
                         <div className="font-medium">{c.name}</div>
@@ -1257,8 +1360,12 @@ export default function BillsCreatePage() {
             <button className="px-4 py-2 rounded border" onClick={() => setOpenItemModal(false)}>
               Cancel
             </button>
-            <button className="px-4 py-2 rounded bg-indigo-600 text-white" onClick={addItemLine}>
-              Add
+            <button
+              className="px-4 py-2 rounded bg-indigo-600 text-white disabled:bg-indigo-300"
+              onClick={addItemLine}
+              disabled={updatingInvoice}
+            >
+              {updatingInvoice ? "Adding..." : "Add"}
             </button>
           </div>
         }

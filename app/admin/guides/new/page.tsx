@@ -67,7 +67,6 @@ interface Invoice {
     total: number;
     createdAt: string;
 
-    // posibles campos que existan si ya relacionaste guía
     guide?: string | null;
     guideId?: string | null;
     guideRef?: string | null;
@@ -81,6 +80,8 @@ type ServiceRow = {
     price: number;
     quantity: number;
 };
+
+type InvoiceMode = "ECUADOR" | "COLOMBIA";
 
 export default function CreateGuidePage() {
     const router = useRouter();
@@ -122,7 +123,7 @@ export default function CreateGuidePage() {
     const [commission, setCommission] = useState<number>(0);
     const [otherCharges, setOtherCharges] = useState<number>(0);
 
-    // ====== Services (como la captura) ======
+    // ====== Services ======
     const [services, setServices] = useState<ServiceRow[]>([
         { id: "box_small", included: false, name: "Caja pequeña", measure: "Unit", price: 2.5, quantity: 0 },
         { id: "box_medium", included: false, name: "Caja Mediana", measure: "Unit", price: 3.5, quantity: 0 },
@@ -133,11 +134,14 @@ export default function CreateGuidePage() {
     const [invoiceSearch, setInvoiceSearch] = useState("");
     const [selectedInvoiceId, setSelectedInvoiceId] = useState<string>("");
 
+    // ====== Invoice Mode (Ecuador/Colombia) ======
+    const [invoiceMode, setInvoiceMode] = useState<InvoiceMode>("ECUADOR");
+
     // ====== Pagination invoices ======
     const [invoicePage, setInvoicePage] = useState<number>(1);
     const INVOICE_PAGE_SIZE = 8;
 
-    // ====== Create Client Modal (re-uso) ======
+    // ====== Create Client Modal (Sender) ======
     const [showCreateClientModal, setShowCreateClientModal] = useState(false);
     const [creatingClient, setCreatingClient] = useState(false);
     const [clientForm, setClientForm] = useState({
@@ -146,18 +150,30 @@ export default function CreateGuidePage() {
         phone: "",
         identification: "",
         address: { street: "", city: "", state: "", zipCode: "" },
-        beneficiaries: [
-            { name: "", relationship: "", phone: "", email: "", identification: "", address: "" },
-        ] as Beneficiary[],
+        beneficiaries: [{ name: "", relationship: "", phone: "", email: "", identification: "", address: "" }] as Beneficiary[],
+    });
+
+    // ====== Add Beneficiary Modal (Recipient) ======
+    const [showAddBeneficiaryModal, setShowAddBeneficiaryModal] = useState(false);
+    const [savingBeneficiary, setSavingBeneficiary] = useState(false);
+    const [beneficiaryForm, setBeneficiaryForm] = useState<Beneficiary>({
+        name: "",
+        relationship: "",
+        phone: "",
+        email: "",
+        identification: "",
+        address: "",
     });
 
     // ====== Saving guide ======
     const [saving, setSaving] = useState(false);
 
+    // -------------------------
+    // Tax calculation
+    // -------------------------
     useEffect(() => {
         const dv = Number(declaredValue || 0);
         const calculatedTax = Number((dv * 0.19).toFixed(2));
-
         setTax(calculatedTax);
     }, [declaredValue]);
 
@@ -215,8 +231,6 @@ export default function CreateGuidePage() {
 
     // -------------------------
     // Load invoices for sender (ONLY available without guide)
-    // - Prefer backend filter ?available=1
-    // - Fallback: filter locally
     // -------------------------
     useEffect(() => {
         if (!senderClientId) return;
@@ -224,8 +238,7 @@ export default function CreateGuidePage() {
         setLoadingInvoices(true);
         (async () => {
             try {
-                // ✅ si tu backend lo soporta, úsalo:
-                // GET invoices/by-client/:id?available=1  (solo sin guía)
+                // Prefer backend filter
                 const data: any = await Api("GET", `invoices/by-client/${senderClientId}?available=1`, null, router);
 
                 if (data?.success) {
@@ -236,10 +249,9 @@ export default function CreateGuidePage() {
                     return;
                 }
 
-                // fallback si API helper devuelve success false (raro)
                 setInvoices([]);
             } catch {
-                // fallback real: intenta sin query y filtra aquí
+                // fallback: load all then filter
                 try {
                     const raw: any = await Api("GET", `invoices/by-client/${senderClientId}`, null, router);
                     const all: Invoice[] = raw?.invoices || [];
@@ -257,15 +269,33 @@ export default function CreateGuidePage() {
     }, [senderClientId, router, showToast]);
 
     // -------------------------
-    // When select invoice -> set declared value & description basis
+    // Selected invoice
     // -------------------------
     const selectedInvoice = useMemo(() => {
         return invoices.find((i) => i._id === selectedInvoiceId) || null;
     }, [invoices, selectedInvoiceId]);
 
+    const invoiceLinesTotal = (inv: Invoice) =>
+        Number((inv.items || []).reduce((sum, it) => sum + Number(it.total || 0), 0).toFixed(2));
+
+    const invoiceColombiaParagraph = (inv: Invoice) => {
+        const parts = (inv.items || [])
+            .map((it) => {
+                const desc = (it.description || "").trim();
+                const qty = Number(it.quantity || 0);
+                if (!desc) return "";
+                return qty > 0 ? `${desc} (x${qty})` : desc;
+            })
+            .filter(Boolean);
+
+        return parts.join(", ");
+    };
+
+    // Declared value changes depending on mode
     useEffect(() => {
         if (!selectedInvoice) return;
-        // Declared value = total invoice (ajústalo si debe ser subtotal)
+
+        // Siempre usa el total original de la invoice (independiente del modo)
         setDeclaredValue(Number(selectedInvoice.total || 0));
     }, [selectedInvoice]);
 
@@ -352,10 +382,7 @@ export default function CreateGuidePage() {
     }, [invoices, invoiceSearch]);
 
     const invoiceTotalPages = Math.max(1, Math.ceil(filteredInvoices.length / INVOICE_PAGE_SIZE));
-    const paginatedInvoices = filteredInvoices.slice(
-        (invoicePage - 1) * INVOICE_PAGE_SIZE,
-        invoicePage * INVOICE_PAGE_SIZE
-    );
+    const paginatedInvoices = filteredInvoices.slice((invoicePage - 1) * INVOICE_PAGE_SIZE, invoicePage * INVOICE_PAGE_SIZE);
 
     useEffect(() => setInvoicePage(1), [invoiceSearch]);
 
@@ -387,10 +414,7 @@ export default function CreateGuidePage() {
     const addBeneficiary = () => {
         setClientForm((prev) => ({
             ...prev,
-            beneficiaries: [
-                ...prev.beneficiaries,
-                { name: "", relationship: "", phone: "", email: "", identification: "", address: "" },
-            ],
+            beneficiaries: [...prev.beneficiaries, { name: "", relationship: "", phone: "", email: "", identification: "", address: "" }],
         }));
     };
 
@@ -433,9 +457,7 @@ export default function CreateGuidePage() {
                 phone: "",
                 identification: "",
                 address: { street: "", city: "", state: "", zipCode: "" },
-                beneficiaries: [
-                    { name: "", relationship: "", phone: "", email: "", identification: "", address: "" },
-                ],
+                beneficiaries: [{ name: "", relationship: "", phone: "", email: "", identification: "", address: "" }],
             });
 
             showToast("Client created successfully", "success");
@@ -443,6 +465,66 @@ export default function CreateGuidePage() {
             showToast(err?.message || "Error creating client", "error");
         } finally {
             setCreatingClient(false);
+        }
+    };
+
+    // -------------------------
+    // Add Beneficiary to sender client
+    // -------------------------
+    const handleAddBeneficiaryToSender = async (e: React.FormEvent) => {
+        e.preventDefault();
+
+        if (!senderClientId) {
+            showToast("Select a sender first", "error");
+            return;
+        }
+        if (!beneficiaryForm.name?.trim()) {
+            showToast("Beneficiary name is required", "error");
+            return;
+        }
+
+        setSavingBeneficiary(true);
+        try {
+            // Ensure we have current sender data
+            const res = (await Api("GET", `clients/${senderClientId}`, null, router)) as any;
+
+            const current: Client | null = senderClient ?? (res?.client as Client | null);
+
+            if (!current) {
+                showToast("Error loading sender client", "error");
+                return;
+            }
+            const beneficiaries = [...(current?.beneficiaries || []), beneficiaryForm];
+
+            const payload = {
+                name: current.name,
+                email: current.email,
+                phone: current.phone,
+                identification: current.identification,
+                address: current.address,
+                beneficiaries,
+            };
+
+            const updated: any = await Api("PUT", `clients/${senderClientId}`, payload, router);
+            if (!updated?.success) {
+                showToast(updated?.message || "Error adding beneficiary", "error");
+                return;
+            }
+
+            // Refresh sender client
+            const refreshed: any = await Api("GET", `clients/${senderClientId}`, null, router);
+            if (refreshed?.success) {
+                setSenderClient(refreshed.client);
+                setBeneficiaryIndex(Math.max(0, (refreshed.client?.beneficiaries?.length || 1) - 1));
+            }
+
+            setBeneficiaryForm({ name: "", relationship: "", phone: "", email: "", identification: "", address: "" });
+            setShowAddBeneficiaryModal(false);
+            showToast("Beneficiary added successfully", "success");
+        } catch (err: any) {
+            showToast(err?.message || "Error adding beneficiary", "error");
+        } finally {
+            setSavingBeneficiary(false);
         }
     };
 
@@ -496,7 +578,9 @@ export default function CreateGuidePage() {
                     quantity: s.quantity,
                     included: s.included,
                 })),
-                invoiceIds: [selectedInvoiceId], // ✅ solo 1 invoice
+                invoiceIds: [selectedInvoiceId],
+                // opcional si quieres registrar la forma de presentación
+                invoiceMode,
             };
 
             const data: any = await Api("POST", "guides", payload, router);
@@ -506,7 +590,7 @@ export default function CreateGuidePage() {
             }
 
             showToast("Guide created successfully", "success");
-            router.push("/admin/guides"); // ajusta a tu ruta real
+            router.push("/admin/guides");
         } catch (err: any) {
             showToast(err?.message || "Error creating guide", "error");
         } finally {
@@ -524,12 +608,18 @@ export default function CreateGuidePage() {
 
     const setServiceIncluded = (id: string, included: boolean) => {
         setServices((prev) =>
-            prev.map((s) => (s.id === id ? { ...s, included, quantity: included ? Math.max(1, s.quantity) : 0 } : s))
+            prev.map((s) =>
+                s.id === id ? { ...s, included, quantity: included ? Math.max(1, s.quantity) : 0 } : s,
+            ),
         );
     };
 
     const setServiceQty = (id: string, qty: number) => {
         setServices((prev) => prev.map((s) => (s.id === id ? { ...s, quantity: Math.max(0, qty) } : s)));
+    };
+
+    const setServicePrice = (id: string, price: number) => {
+        setServices((prev) => prev.map((s) => (s.id === id ? { ...s, price: Math.max(0, Number(price || 0)) } : s)));
     };
 
     return (
@@ -539,8 +629,6 @@ export default function CreateGuidePage() {
                     <h1 className="text-3xl font-bold text-gray-900">Create Guide</h1>
                     <p className="text-gray-600 mt-2">Fill sender, recipient, packages, tariff and services</p>
                 </div>
-
-                
             </div>
 
             {/* Sender / Recipient */}
@@ -609,6 +697,22 @@ export default function CreateGuidePage() {
                 <div className="card p-6">
                     <div className="flex items-center justify-between mb-4">
                         <h2 className="text-lg font-semibold text-gray-900">Destinatario *</h2>
+
+                        <button
+                            type="button"
+                            onClick={() => {
+                                if (!senderClientId) {
+                                    showToast("Select a sender first", "error");
+                                    return;
+                                }
+                                setShowAddBeneficiaryModal(true);
+                            }}
+                            className="btn-outline text-sm flex items-center"
+                            disabled={!senderClientId}
+                        >
+                            <Plus className="h-4 w-4 mr-1" />
+                            Add beneficiary
+                        </button>
                     </div>
 
                     <div>
@@ -637,9 +741,7 @@ export default function CreateGuidePage() {
                             {beneficiaryPreview.address && <div className="text-gray-500">{beneficiaryPreview.address}</div>}
                         </div>
                     ) : (
-                        <div className="mt-4 text-sm text-gray-500">
-                            Select a sender with beneficiaries.
-                        </div>
+                        <div className="mt-4 text-sm text-gray-500">Select a sender with beneficiaries.</div>
                     )}
                 </div>
             </div>
@@ -669,9 +771,7 @@ export default function CreateGuidePage() {
             <div className="card p-6">
                 <div className="flex items-center justify-between mb-4">
                     <h2 className="text-lg font-semibold text-gray-900">Paquetes (Invoice) *</h2>
-                    <span className="text-sm text-gray-500">
-                        {filteredInvoices.length} available invoice(s)
-                    </span>
+                    <span className="text-sm text-gray-500">{filteredInvoices.length} available invoice(s)</span>
                 </div>
 
                 <div className="flex items-center gap-2 mb-4">
@@ -685,6 +785,16 @@ export default function CreateGuidePage() {
                             disabled={!senderClientId || loadingInvoices}
                         />
                     </div>
+
+                    <select
+                        className="input md:w-52"
+                        value={invoiceMode}
+                        onChange={(e) => setInvoiceMode(e.target.value as InvoiceMode)}
+                        disabled={!senderClientId || loadingInvoices}
+                    >
+                        <option value="ECUADOR">Ecuador</option>
+                        <option value="COLOMBIA">Colombia</option>
+                    </select>
                 </div>
 
                 {!senderClientId ? (
@@ -692,46 +802,52 @@ export default function CreateGuidePage() {
                 ) : loadingInvoices ? (
                     <div className="text-sm text-gray-500">Loading invoices...</div>
                 ) : filteredInvoices.length === 0 ? (
-                    <div className="text-sm text-gray-500">
-                        No available invoices (without guide) for this client.
-                    </div>
+                    <div className="text-sm text-gray-500">No available invoices (without guide) for this client.</div>
                 ) : (
                     <>
                         <div className="space-y-2">
-                            {paginatedInvoices.map((inv) => (
-                                <label
-                                    key={inv._id}
-                                    className={`flex items-start gap-3 border rounded-md p-3 cursor-pointer ${selectedInvoiceId === inv._id ? "border-blue-500 bg-blue-50" : "border-gray-200"
-                                        }`}
-                                >
-                                    <input
-                                        type="radio"
-                                        name="invoice"
-                                        checked={selectedInvoiceId === inv._id}
-                                        onChange={() => setSelectedInvoiceId(inv._id)}
-                                        className="mt-1"
-                                    />
-                                    <div className="flex-1">
-                                        <div className="flex items-center justify-between">
-                                            <div className="font-medium text-gray-900">
-                                                Invoice {inv.invoiceNumber}
+                            {paginatedInvoices.map((inv) => {
+                                const shownTotal =
+                                    invoiceMode === "COLOMBIA" ? invoiceLinesTotal(inv) : Number(inv.total || 0);
+
+                                return (
+                                    <label
+                                        key={inv._id}
+                                        className={`flex items-start gap-3 border rounded-md p-3 cursor-pointer ${selectedInvoiceId === inv._id ? "border-blue-500 bg-blue-50" : "border-gray-200"
+                                            }`}
+                                    >
+                                        <input
+                                            type="radio"
+                                            name="invoice"
+                                            checked={selectedInvoiceId === inv._id}
+                                            onChange={() => setSelectedInvoiceId(inv._id)}
+                                            className="mt-1"
+                                        />
+                                        <div className="flex-1">
+                                            <div className="flex items-center justify-between">
+                                                <div className="font-medium text-gray-900">Invoice {inv.invoiceNumber}</div>
+                                                <div className="text-sm font-semibold">£{shownTotal.toFixed(2)}</div>
                                             </div>
-                                            <div className="text-sm font-semibold">£{Number(inv.total || 0).toFixed(2)}</div>
+                                            <div className="text-xs text-gray-500">{new Date(inv.createdAt).toLocaleDateString()}</div>
+
+                                            <div className="text-xs text-gray-600 mt-2">
+                                                {invoiceMode === "ECUADOR" ? (
+                                                    <>
+                                                        {(inv.items || []).slice(0, 2).map((it, idx) => (
+                                                            <div key={idx}>• {it.description} (x{it.quantity})</div>
+                                                        ))}
+                                                        {(inv.items || []).length > 2 && (
+                                                            <div className="text-gray-400">+ {(inv.items || []).length - 2} more</div>
+                                                        )}
+                                                    </>
+                                                ) : (
+                                                    <div className="text-gray-700">{invoiceColombiaParagraph(inv)}</div>
+                                                )}
+                                            </div>
                                         </div>
-                                        <div className="text-xs text-gray-500">
-                                            {new Date(inv.createdAt).toLocaleDateString()}
-                                        </div>
-                                        <div className="text-xs text-gray-600 mt-2">
-                                            {(inv.items || []).slice(0, 2).map((it, idx) => (
-                                                <div key={idx}>• {it.description} (x{it.quantity})</div>
-                                            ))}
-                                            {(inv.items || []).length > 2 && (
-                                                <div className="text-gray-400">+ {(inv.items || []).length - 2} more</div>
-                                            )}
-                                        </div>
-                                    </div>
-                                </label>
-                            ))}
+                                    </label>
+                                );
+                            })}
                         </div>
 
                         {/* Pagination */}
@@ -765,7 +881,8 @@ export default function CreateGuidePage() {
                                 <div className="flex items-center justify-between">
                                     <h3 className="text-sm font-semibold text-gray-900">Invoice items (detail)</h3>
                                     <div className="text-sm text-gray-600">
-                                        Declared value auto: <span className="font-semibold">£{declaredValue.toFixed(2)}</span>
+                                        Declared value auto:{" "}
+                                        <span className="font-semibold">£{Number(declaredValue || 0).toFixed(2)}</span>
                                     </div>
                                 </div>
 
@@ -780,14 +897,23 @@ export default function CreateGuidePage() {
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            {(selectedInvoice.items || []).map((it, idx) => (
-                                                <tr key={idx} className="border-t">
-                                                    <td className="py-2">{it.description}</td>
-                                                    <td className="py-2">{it.quantity}</td>
-                                                    <td className="py-2">£{Number(it.unitPrice || 0).toFixed(2)}</td>
-                                                    <td className="py-2 font-medium">£{Number(it.total || 0).toFixed(2)}</td>
+                                            {invoiceMode === "ECUADOR" ? (
+                                                (selectedInvoice.items || []).map((it, idx) => (
+                                                    <tr key={idx} className="border-t">
+                                                        <td className="py-2">{it.description}</td>
+                                                        <td className="py-2">{it.quantity}</td>
+                                                        <td className="py-2">£{Number(it.unitPrice || 0).toFixed(2)}</td>
+                                                        <td className="py-2 font-medium">£{Number(it.total || 0).toFixed(2)}</td>
+                                                    </tr>
+                                                ))
+                                            ) : (
+                                                <tr className="border-t">
+                                                    <td className="py-2">{invoiceColombiaParagraph(selectedInvoice)}</td>
+                                                    <td className="py-2">—</td>
+                                                    <td className="py-2">—</td>
+                                                    <td className="py-2 font-medium">£{invoiceLinesTotal(selectedInvoice).toFixed(2)}</td>
                                                 </tr>
-                                            ))}
+                                            )}
                                         </tbody>
                                     </table>
                                 </div>
@@ -940,7 +1066,7 @@ export default function CreateGuidePage() {
                         </thead>
                         <tbody>
                             {services.map((s) => {
-                                const rowTotal = s.included ? s.price * (s.quantity || 0) : 0;
+                                const rowTotal = s.included ? Number(s.price || 0) * Number(s.quantity || 0) : 0;
                                 return (
                                     <tr key={s.id} className="border-t">
                                         <td className="py-3">
@@ -957,7 +1083,16 @@ export default function CreateGuidePage() {
                                             <input className="input" value={s.measure} readOnly />
                                         </td>
                                         <td className="py-3">
-                                            <input className="input text-right" value={s.price.toFixed(2)} readOnly />
+                                            <input
+                                                className="input text-right"
+                                                type="number"
+                                                step="0.01"
+                                                min={0}
+                                                value={Number(s.price || 0)}
+                                                onChange={(e) => setServicePrice(s.id, Number(e.target.value || 0))}
+                                            // si lo quieres editable solo cuando esté incluido, descomenta:
+                                            // disabled={!s.included}
+                                            />
                                         </td>
                                         <td className="py-3">
                                             <input
@@ -1016,19 +1151,35 @@ export default function CreateGuidePage() {
                             <span className="text-gray-600">Otros</span>
                             <span className="font-medium">£{Number(otherCharges || 0).toFixed(2)}</span>
                         </div>
+                        <div className="flex justify-between">
+                            <span className="text-gray-600">Comisión</span>
+                            <span className="font-medium">£{Number(commission || 0).toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                            <span className="text-gray-600">Descuento</span>
+                            <span className="font-medium">- £{Number(discount || 0).toFixed(2)}</span>
+                        </div>
                     </div>
 
                     <div className="border rounded-md p-4 bg-gray-50">
                         <div className="text-sm text-gray-600">Total</div>
                         <div className="text-2xl font-bold">£{totalGuide.toFixed(2)}</div>
-                        <div className="text-xs text-gray-400 mt-1">
-                            (incluye comisión y descuento si aplican)
-                        </div>
+                        <div className="text-xs text-gray-400 mt-1">(incluye comisión y descuento si aplican)</div>
                     </div>
                 </div>
             </div>
 
-            {/* ============ Create Client Modal (re-uso) ============ */}
+            {/* Footer Actions */}
+            <div className="flex items-center gap-2">
+                <button onClick={() => router.back()} className="btn-outline">
+                    Cancel
+                </button>
+                <button onClick={handleSaveGuide} className="btn-primary" disabled={saving}>
+                    {saving ? "Creating..." : "Create"}
+                </button>
+            </div>
+
+            {/* ============ Create Client Modal ============ */}
             <Modal
                 isOpen={showCreateClientModal}
                 onClose={() => setShowCreateClientModal(false)}
@@ -1042,75 +1193,38 @@ export default function CreateGuidePage() {
                         <div className="grid grid-cols-2 gap-4">
                             <div>
                                 <label className="label">Full Name *</label>
-                                <input
-                                    className="input"
-                                    value={clientForm.name}
-                                    onChange={(e) => updateClientField("name", e.target.value)}
-                                    required
-                                />
+                                <input className="input" value={clientForm.name} onChange={(e) => updateClientField("name", e.target.value)} required />
                             </div>
                             <div>
                                 <label className="label">Email *</label>
-                                <input
-                                    type="email"
-                                    className="input"
-                                    value={clientForm.email}
-                                    onChange={(e) => updateClientField("email", e.target.value)}
-                                    required
-                                />
+                                <input type="email" className="input" value={clientForm.email} onChange={(e) => updateClientField("email", e.target.value)} required />
                             </div>
                             <div>
                                 <label className="label">Phone *</label>
-                                <input
-                                    className="input"
-                                    value={clientForm.phone}
-                                    onChange={(e) => updateClientField("phone", e.target.value)}
-                                    required
-                                />
+                                <input className="input" value={clientForm.phone} onChange={(e) => updateClientField("phone", e.target.value)} required />
                             </div>
                             <div>
                                 <label className="label">Identification *</label>
-                                <input
-                                    className="input"
-                                    value={clientForm.identification}
-                                    onChange={(e) => updateClientField("identification", e.target.value)}
-                                    required
-                                />
+                                <input className="input" value={clientForm.identification} onChange={(e) => updateClientField("identification", e.target.value)} required />
                             </div>
                         </div>
 
                         <div className="grid grid-cols-2 gap-4 mt-4">
                             <div>
                                 <label className="label">Street</label>
-                                <input
-                                    className="input"
-                                    value={clientForm.address.street}
-                                    onChange={(e) => updateClientField("address.street", e.target.value)}
-                                />
+                                <input className="input" value={clientForm.address.street} onChange={(e) => updateClientField("address.street", e.target.value)} />
                             </div>
                             <div>
                                 <label className="label">City</label>
-                                <input
-                                    className="input"
-                                    value={clientForm.address.city}
-                                    onChange={(e) => updateClientField("address.city", e.target.value)}
-                                />
+                                <input className="input" value={clientForm.address.city} onChange={(e) => updateClientField("address.city", e.target.value)} />
                             </div>
                             <div>
                                 <label className="label">State</label>
-                                <input
-                                    className="input"
-                                    value={clientForm.address.state}
-                                    onChange={(e) => updateClientField("address.state", e.target.value)}
-                                />
+                                <input className="input" value={clientForm.address.state} onChange={(e) => updateClientField("address.state", e.target.value)} />
                             </div>
                             <div>
                                 <label className="label">ZIP Code</label>
-                                <input
-                                    className="input"
-                                    value={clientForm.address.zipCode}
-                                    onChange={(e) => updateClientField("address.zipCode", e.target.value)}
-                                />
+                                <input className="input" value={clientForm.address.zipCode} onChange={(e) => updateClientField("address.zipCode", e.target.value)} />
                             </div>
                         </div>
                     </div>
@@ -1119,11 +1233,7 @@ export default function CreateGuidePage() {
                     <div>
                         <div className="flex items-center justify-between mb-3">
                             <h3 className="text-lg font-medium text-gray-900">Beneficiaries</h3>
-                            <button
-                                type="button"
-                                className="btn-outline text-sm flex items-center"
-                                onClick={addBeneficiary}
-                            >
+                            <button type="button" className="btn-outline text-sm flex items-center" onClick={addBeneficiary}>
                                 <Plus className="h-4 w-4 mr-1" />
                                 Add Beneficiary
                             </button>
@@ -1159,44 +1269,23 @@ export default function CreateGuidePage() {
                                         </div>
                                         <div>
                                             <label className="label">Relationship</label>
-                                            <input
-                                                className="input"
-                                                value={b.relationship || ""}
-                                                onChange={(e) => updateBeneficiaryField(idx, "relationship", e.target.value)}
-                                            />
+                                            <input className="input" value={b.relationship || ""} onChange={(e) => updateBeneficiaryField(idx, "relationship", e.target.value)} />
                                         </div>
                                         <div>
                                             <label className="label">Phone</label>
-                                            <input
-                                                className="input"
-                                                value={b.phone || ""}
-                                                onChange={(e) => updateBeneficiaryField(idx, "phone", e.target.value)}
-                                            />
+                                            <input className="input" value={b.phone || ""} onChange={(e) => updateBeneficiaryField(idx, "phone", e.target.value)} />
                                         </div>
                                         <div>
                                             <label className="label">Email</label>
-                                            <input
-                                                type="email"
-                                                className="input"
-                                                value={b.email || ""}
-                                                onChange={(e) => updateBeneficiaryField(idx, "email", e.target.value)}
-                                            />
+                                            <input type="email" className="input" value={b.email || ""} onChange={(e) => updateBeneficiaryField(idx, "email", e.target.value)} />
                                         </div>
                                         <div className="col-span-2">
                                             <label className="label">Identification</label>
-                                            <input
-                                                className="input"
-                                                value={b.identification || ""}
-                                                onChange={(e) => updateBeneficiaryField(idx, "identification", e.target.value)}
-                                            />
+                                            <input className="input" value={b.identification || ""} onChange={(e) => updateBeneficiaryField(idx, "identification", e.target.value)} />
                                         </div>
                                         <div className="col-span-2">
                                             <label className="label">Address</label>
-                                            <input
-                                                className="input"
-                                                value={b.address || ""}
-                                                onChange={(e) => updateBeneficiaryField(idx, "address", e.target.value)}
-                                            />
+                                            <input className="input" value={b.address || ""} onChange={(e) => updateBeneficiaryField(idx, "address", e.target.value)} />
                                         </div>
                                     </div>
                                 </div>
@@ -1205,11 +1294,7 @@ export default function CreateGuidePage() {
                     </div>
 
                     <div className="flex justify-end space-x-3 pt-4 border-t border-gray-200">
-                        <button
-                            type="button"
-                            onClick={() => setShowCreateClientModal(false)}
-                            className="btn-outline"
-                        >
+                        <button type="button" onClick={() => setShowCreateClientModal(false)} className="btn-outline">
                             Cancel
                         </button>
                         <button type="submit" disabled={creatingClient} className="btn-primary">
@@ -1218,17 +1303,83 @@ export default function CreateGuidePage() {
                     </div>
                 </form>
             </Modal>
-            <div className="space-y-6 animate-fade-in">
-                <div className="flex items-center gap-2">
-                    <button onClick={() => router.back()} className="btn-outline">
-                        Cancel
-                    </button>
-                    <button onClick={handleSaveGuide} className="btn-primary" disabled={saving}>
-                        {saving ? "Creating..." : "Create"}
-                    </button>
-                </div>
-            </div>
+
+            {/* ============ Add Beneficiary Modal ============ */}
+            <Modal
+                isOpen={showAddBeneficiaryModal}
+                onClose={() => setShowAddBeneficiaryModal(false)}
+                title="Add Beneficiary"
+                size="large"
+            >
+                <form onSubmit={handleAddBeneficiaryToSender} className="space-y-6">
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="label">Name *</label>
+                            <input
+                                className="input"
+                                value={beneficiaryForm.name || ""}
+                                onChange={(e) => setBeneficiaryForm((p) => ({ ...p, name: e.target.value }))}
+                                required
+                            />
+                        </div>
+
+                        <div>
+                            <label className="label">Relationship</label>
+                            <input
+                                className="input"
+                                value={beneficiaryForm.relationship || ""}
+                                onChange={(e) => setBeneficiaryForm((p) => ({ ...p, relationship: e.target.value }))}
+                            />
+                        </div>
+
+                        <div>
+                            <label className="label">Phone</label>
+                            <input
+                                className="input"
+                                value={beneficiaryForm.phone || ""}
+                                onChange={(e) => setBeneficiaryForm((p) => ({ ...p, phone: e.target.value }))}
+                            />
+                        </div>
+
+                        <div>
+                            <label className="label">Email</label>
+                            <input
+                                type="email"
+                                className="input"
+                                value={beneficiaryForm.email || ""}
+                                onChange={(e) => setBeneficiaryForm((p) => ({ ...p, email: e.target.value }))}
+                            />
+                        </div>
+
+                        <div className="col-span-2">
+                            <label className="label">Identification</label>
+                            <input
+                                className="input"
+                                value={beneficiaryForm.identification || ""}
+                                onChange={(e) => setBeneficiaryForm((p) => ({ ...p, identification: e.target.value }))}
+                            />
+                        </div>
+
+                        <div className="col-span-2">
+                            <label className="label">Address</label>
+                            <input
+                                className="input"
+                                value={beneficiaryForm.address || ""}
+                                onChange={(e) => setBeneficiaryForm((p) => ({ ...p, address: e.target.value }))}
+                            />
+                        </div>
+                    </div>
+
+                    <div className="flex justify-end space-x-3 pt-4 border-t border-gray-200">
+                        <button type="button" onClick={() => setShowAddBeneficiaryModal(false)} className="btn-outline">
+                            Cancel
+                        </button>
+                        <button type="submit" disabled={savingBeneficiary} className="btn-primary">
+                            {savingBeneficiary ? "Saving..." : "Add Beneficiary"}
+                        </button>
+                    </div>
+                </form>
+            </Modal>
         </div>
-        
     );
 }

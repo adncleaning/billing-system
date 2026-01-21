@@ -58,6 +58,7 @@ export default function InvoicesPage() {
     | "shelter"
     | "fight_for_sight"
     | "st_christophers"
+    | "shelter_v2"
   >("amazon");
   const [generatingPdf, setGeneratingPdf] = useState(false);
 
@@ -255,9 +256,8 @@ export default function InvoicesPage() {
 
     return (
       <span
-        className={`px-2 py-1 text-xs font-medium rounded-full ${
-          statusClasses[status as keyof typeof statusClasses]
-        }`}
+        className={`px-2 py-1 text-xs font-medium rounded-full ${statusClasses[status as keyof typeof statusClasses]
+          }`}
       >
         {status.charAt(0).toUpperCase() + status.slice(1)}
       </span>
@@ -606,6 +606,16 @@ export default function InvoicesPage() {
                   onChange={() => setPdfTemplate("ebay")}
                 />
                 <span className="text-sm">eBay UK Invoice</span>
+              </label>
+
+              <label className="flex items-center space-x-2">
+                <input
+                  type="radio"
+                  value="shelter_v2"
+                  checked={pdfTemplate === "shelter_v2"}
+                  onChange={() => setPdfTemplate("shelter_v2")}
+                />
+                <span className="text-sm">Shelter Style Invoice</span>
               </label>
 
               {/* <label className="flex items-center space-x-2">
