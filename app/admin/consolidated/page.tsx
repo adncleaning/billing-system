@@ -55,7 +55,7 @@ async function apiFetch(path: string, options: RequestInit = {}) {
     try {
       const err = await res.json();
       msg = err?.message || msg;
-    } catch {}
+    } catch { }
     throw new Error(msg);
   }
   return res.json();
@@ -131,6 +131,33 @@ const ConsolidatedListPage = () => {
     } catch (e) {
       console.error(e);
       alert("No se pudo abrir el PDF del consolidado");
+    }
+  };
+  const downloadExcel = async (id: string) => {
+    try {
+      const token =
+        (typeof window !== "undefined" && localStorage.getItem("token")) || "";
+      const url = `${API_URL}/consolidated/${id}/excel`;
+
+      const res = await fetch(url, {
+        method: "GET",
+        headers: token ? { Authorization: `jwt ${token}` } : {},
+      });
+
+      if (!res.ok) throw new Error("Error generando Excel");
+
+      const blob = await res.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = `consolidated_${id}.xlsx`;
+      a.click();
+
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (e) {
+      console.error(e);
+      alert("No se pudo descargar el Excel del consolidado");
     }
   };
 
@@ -231,6 +258,12 @@ const ConsolidatedListPage = () => {
                       onClick={() => openPdf(c._id)}
                     >
                       PDF
+                    </button>
+                    <button
+                      className="text-[11px] px-2 py-0.5 rounded border bg-slate-50 hover:bg-slate-100 mr-1"
+                      onClick={() => downloadExcel(c._id)}
+                    >
+                      Excel
                     </button>
                     {/* Si luego quieres editar: */}
                     {/* <button

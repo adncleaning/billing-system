@@ -6,7 +6,7 @@ import { useAuth } from "@/contexts/AuthContext"
 import { useRouter } from "next/navigation"
 import Sidebar from "@/components/Sidebar"
 import LoadingSpinner from "@/components/LoadingSpinner"
-import { Users, FileText, DollarSign, BarChart3, ShoppingCart } from "lucide-react"
+import { Users, FileText, DollarSign, BarChart3, ShoppingCart, MapPin } from "lucide-react"
 
 export default function AdminLayout({
   children,
@@ -44,6 +44,11 @@ export default function AdminLayout({
       href: "/admin/clients",
       label: "Clients",
       icon: <Users className="h-5 w-5" />,
+    },
+    {
+      href: "/admin/cities",
+      label: "Cities",
+      icon: <MapPin className="h-5 w-5" />,
     },
     {
       href: "/admin/invoices",

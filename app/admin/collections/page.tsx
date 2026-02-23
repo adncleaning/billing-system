@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { Api, useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/contexts/ToastContext";
@@ -12,10 +13,14 @@ import {
   Calendar as CalendarIcon,
   MapPin,
   Clock,
-  FileText,
-  Receipt,
-  CreditCard,
+  Search,
+  Route,
+  Loader2,
+  ExternalLink,
 } from "lucide-react";
+
+/** ✅ Mapa (Leaflet) - ya NO se usa en el calendario, pero lo dejo por si luego quieres mini preview */
+// const RouteMap = dynamic(() => import("@/components/route-map"), { ssr: false });
 
 /** -------------------- Types -------------------- */
 type ClientLite = {
@@ -23,6 +28,12 @@ type ClientLite = {
   name: string;
   phone?: string;
   email?: string;
+  address?: {
+    street?: string;
+    city?: string;
+    state?: string;
+    zipCode?: string;
+  };
 };
 
 type CollectionStatus =
@@ -31,33 +42,53 @@ type CollectionStatus =
   | "EN_ROUTE"
   | "COLLECTED"
   | "AT_WAREHOUSE"
-  | "GUIDE_CREATED"
-  | "BILLED"
-  | "PAID"
   | "COMPLETED"
   | "CANCELLED";
 
 type Collection = {
   _id: string;
-  client: { _id: string; name: string; phone?: string; email?: string };
+  client: ClientLite;
   address: string;
   postcode: string;
-  pickupAt: string; // ISO
+  pickupAt: string;
   status: CollectionStatus;
-
-  // flags (opcional)
-  billId?: string;
-  guideId?: string;
-  paymentId?: string;
-
   notes?: string;
-  createdAt?: string;
 };
 
+type TimeSlot = "morning" | "afternoon" | "evening";
+
+type Waypoint = {
+  address: string;
+  lat: number;
+  lng: number;
+  code?: string; // postcode
+  timeSlot?: TimeSlot;
+};
+
+type OptimizeResult = {
+  total?: {
+    distance_km?: number;
+    duration_human?: string;
+    fuel_cost?: number;
+  };
+  normalizedStops?: Array<
+    Waypoint & {
+      isHQ?: boolean;
+      timeSlot?: string; // backend puede enviar "office"
+    }
+  >;
+  order?: number[];
+  stopsOnlyOrder?: number[]; // si lo agregaste en backend
+  geometry?: { type: "LineString"; coordinates: [number, number][] };
+  roundTrip?: boolean;
+  segmentBoundaries?: any[];
+};
+
+/** -------------------- Helpers Visuales -------------------- */
 function startOfWeek(d: Date) {
   const x = new Date(d);
-  const day = x.getDay(); // 0 Sun
-  const diff = (day === 0 ? -6 : 1) - day; // Monday start
+  const day = x.getDay();
+  const diff = (day === 0 ? -6 : 1) - day;
   x.setDate(x.getDate() + diff);
   x.setHours(0, 0, 0, 0);
   return x;
@@ -69,64 +100,47 @@ function addDays(d: Date, n: number) {
 }
 function fmtDayLabel(d: Date) {
   const parts = d.toISOString().slice(0, 10).split("-");
-  return `${["SUN","MON","TUE","WED","THU","FRI","SAT"][d.getDay()]}-${parts[0]}/${parts[1]}/${parts[2]}`;
+  return `${["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"][d.getDay()]}-${parts[2]}/${parts[1]}/${parts[0].slice(2)}`;
 }
 function fmtTime(iso: string) {
-  const d = new Date(iso);
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
-function fmtDateShort(iso: string) {
-  const d = new Date(iso);
-  return d.toLocaleDateString([], { day: "2-digit", month: "short", year: "2-digit" });
-}
-
-function badgeClass(s: CollectionStatus) {
-  const base = "px-2 py-0.5 rounded text-[11px] font-semibold";
-  if (s === "COMPLETED" || s === "PAID") return `${base} bg-green-100 text-green-800`;
-  if (s === "CANCELLED") return `${base} bg-red-100 text-red-800`;
-  if (s === "EN_ROUTE") return `${base} bg-blue-100 text-blue-800`;
-  if (s === "COLLECTED" || s === "AT_WAREHOUSE") return `${base} bg-indigo-100 text-indigo-800`;
-  if (s === "BILLED" || s === "GUIDE_CREATED") return `${base} bg-yellow-100 text-yellow-800`;
-  return `${base} bg-gray-100 text-gray-800`;
+function pickTimeSlot(iso: string): TimeSlot {
+  const h = new Date(iso).getHours();
+  if (h < 12) return "morning";
+  if (h < 17) return "afternoon";
+  return "evening";
 }
 
-function chip(ok: boolean, label: string, Icon: any) {
-  return (
-    <span
-      className={
-        "inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold " +
-        (ok ? "bg-green-50 text-green-800 border border-green-200" : "bg-gray-50 text-gray-600 border border-gray-200")
-      }
-    >
-      <Icon className="h-3.5 w-3.5" />
-      {label}
-    </span>
-  );
+const UK_POSTCODE_RE = /([A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})$/i;
+function extractPostcode(text = "") {
+  const m = String(text).toUpperCase().match(UK_POSTCODE_RE);
+  if (!m) return "";
+  return m[1].replace(/\s+/g, ""); // "SE22 8JJ" -> "SE228JJ"
 }
 
-/** -------------------- Page -------------------- */
 export default function CollectionsPage() {
   const router = useRouter();
   const { token } = useAuth();
   const { showToast } = useToast();
 
-  /** calendar */
+  // Estados de Calendario
   const [anchor, setAnchor] = useState(() => new Date());
   const weekStart = useMemo(() => startOfWeek(anchor), [anchor]);
   const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart]);
 
-  /** data */
+  // Estados de Datos
   const [items, setItems] = useState<Collection[]>([]);
   const [loading, setLoading] = useState(false);
-
-  /** add modal */
-  const [openAdd, setOpenAdd] = useState(false);
   const [clients, setClients] = useState<ClientLite[]>([]);
-  const [clientQ, setClientQ] = useState("");
-  const [loadingClients, setLoadingClients] = useState(false);
+  const [loadingClients, setLoadingClients] = useState(true);
+
+  // Estados del Formulario
+  const [openAdd, setOpenAdd] = useState(false);
+  const [senderSearch, setSenderSearch] = useState("");
+  const [senderClientId, setSenderClientId] = useState("");
 
   const [form, setForm] = useState({
-    clientId: "",
     address: "",
     postcode: "",
     pickupDate: new Date().toISOString().slice(0, 10),
@@ -134,395 +148,506 @@ export default function CollectionsPage() {
     notes: "",
   });
 
-  /** summary modal */
   const [openSummary, setOpenSummary] = useState(false);
   const [selected, setSelected] = useState<Collection | null>(null);
 
-  /** -------------------- API -------------------- */
+  /** ✅ Selección múltiple por día */
+  const [selectedByDay, setSelectedByDay] = useState<Record<string, string[]>>({});
+
+  /** ✅ Resultado de ruta por día */
+  const [routeByDay, setRouteByDay] = useState<Record<string, OptimizeResult | null>>({});
+  const [routeLoadingByDay, setRouteLoadingByDay] = useState<Record<string, boolean>>({});
+
+  /** ✅ Cache de geocode en memoria */
+  const geocodeCacheRef = useRef<Map<string, { lat: number; lng: number; formatted?: string }>>(new Map());
+
+  /** 1. Carga inicial de datos */
+  useEffect(() => {
+    if (token) {
+      loadCollections();
+      loadClients();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, weekStart.getTime()]);
+
   async function loadCollections() {
     setLoading(true);
     try {
-      // ✅ rango semana
-      const from = new Date(weekStart);
-      const to = addDays(weekStart, 7);
-      const qs = new URLSearchParams();
-      qs.set("from", from.toISOString());
-      qs.set("to", to.toISOString());
-
-      // Endpoint sugerido: GET /collections?from&to
-      const data: any = await Api("GET", `collections?${qs.toString()}`, null, router);
+      const from = new Date(weekStart).toISOString();
+      const to = addDays(weekStart, 7).toISOString();
+      const data: any = await Api("GET", `collections?from=${from}&to=${to}`, null, router);
       setItems(data?.data || data?.collections || []);
     } catch (e: any) {
-      showToast(e?.message || "Error loading collections", "error");
-      setItems([]);
+      showToast("Error loading collections", "error");
     } finally {
       setLoading(false);
     }
   }
 
-  async function loadClients(q: string) {
-    setLoadingClients(true);
+  async function loadClients() {
     try {
-      const data: any = await Api("GET", `clients?q=${encodeURIComponent(q)}`, null, router);
-      setClients(data?.clients || data?.data || []);
-    } catch (e: any) {
-      showToast(e?.message || "Error loading clients", "error");
-      setClients([]);
+      const data: any = await Api("GET", "clients", null, router);
+      if (data?.success) setClients(data.clients || []);
+    } catch {
+      showToast("Error loading clients", "error");
     } finally {
       setLoadingClients(false);
     }
   }
 
+  /** 2. Lógica de selección y auto-llenado automático */
+  const handleClientChange = (id: string) => {
+    setSenderClientId(id);
+    const client = clients.find((c) => c._id === id);
+
+    if (client && client.address) {
+      const { street, city, state, zipCode } = client.address;
+
+      const addressParts = [street, city, state].filter((p) => p && p.trim() !== "");
+      const fullAddress = addressParts.join(", ");
+
+      setForm((prev) => ({
+        ...prev,
+        address: fullAddress,
+        postcode: zipCode || "",
+      }));
+    } else {
+      setForm((prev) => ({ ...prev, address: "", postcode: "" }));
+    }
+  };
+
+  /** 3. Lógica de búsqueda */
+  const filteredClients = useMemo(() => {
+    const t = senderSearch.toLowerCase().trim();
+    if (!t) return clients;
+    return clients.filter(
+      (c) =>
+        c.name?.toLowerCase().includes(t) ||
+        c.phone?.toLowerCase().includes(t) ||
+        c.email?.toLowerCase().includes(t)
+    );
+  }, [clients, senderSearch]);
+
+  const selectedClientDetail = useMemo(() => {
+    return clients.find((c) => c._id === senderClientId) || null;
+  }, [clients, senderClientId]);
+
+  /** 4. Guardado */
   async function createCollection() {
-    if (!form.clientId) return showToast("Select a client", "error");
-    if (!form.address.trim()) return showToast("Address required", "error");
-    if (!form.postcode.trim()) return showToast("Postcode required", "error");
+    if (!senderClientId) return showToast("Seleccione un cliente", "error");
+    if (!form.address.trim()) return showToast("Dirección requerida", "error");
 
     try {
       const pickupAt = new Date(`${form.pickupDate}T${form.pickupTime}:00`).toISOString();
-
       const payload = {
-        clientId: form.clientId,
+        clientId: senderClientId,
         address: form.address.trim(),
         postcode: form.postcode.trim(),
         pickupAt,
         notes: form.notes?.trim() || "",
       };
 
-      // Endpoint sugerido: POST /collections
-      const data: any = await Api("POST", "collections", payload, router);
-      if (data?.success === false) throw new Error(data?.message || "Error creating collection");
-
-      showToast("Collection created", "success");
+      await Api("POST", "collections", payload, router);
+      showToast("Recolección agendada con éxito", "success");
       setOpenAdd(false);
-      setForm((p) => ({
-        ...p,
-        clientId: "",
-        address: "",
-        postcode: "",
-        pickupTime: "09:00",
-        notes: "",
-      }));
-      await loadCollections();
+      setSenderClientId("");
+      setSenderSearch("");
+      loadCollections();
     } catch (e: any) {
-      showToast(e?.message || "Error creating collection", "error");
+      showToast(e?.message || "Error al crear", "error");
     }
   }
 
-  /** -------------------- Effects -------------------- */
-  useEffect(() => {
-    if (token) loadCollections();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, weekStart.getTime()]);
-
-  useEffect(() => {
-    if (!openAdd) return;
-    const t = setTimeout(() => loadClients(clientQ), 250);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clientQ, openAdd]);
-
-  /** -------------------- Derived: items by day sorted by time -------------------- */
+  // Agrupación para el calendario
   const byDay = useMemo(() => {
     const map = new Map<string, Collection[]>();
-    for (const d of days) map.set(d.toISOString().slice(0, 10), []);
-
-    for (const c of items) {
+    days.forEach((d) => map.set(d.toISOString().slice(0, 10), []));
+    items.forEach((c) => {
       const key = new Date(c.pickupAt).toISOString().slice(0, 10);
       if (map.has(key)) map.get(key)!.push(c);
-    }
-
-    for (const [k, arr] of map.entries()) {
-      arr.sort((a, b) => new Date(a.pickupAt).getTime() - new Date(b.pickupAt).getTime());
-      map.set(k, arr);
-    }
+    });
     return map;
   }, [items, days]);
 
-  /** -------------------- UI handlers -------------------- */
-  function openSummaryFor(c: Collection) {
-    setSelected(c);
-    setOpenSummary(true);
+  /** ✅ Toggle selection por día */
+  function toggleSelection(dayKey: string, collectionId: string) {
+    setSelectedByDay((prev) => {
+      const current = new Set(prev[dayKey] || []);
+      if (current.has(collectionId)) current.delete(collectionId);
+      else current.add(collectionId);
+      return { ...prev, [dayKey]: Array.from(current) };
+    });
+  }
+
+  function clearDaySelection(dayKey: string) {
+    setSelectedByDay((prev) => ({ ...prev, [dayKey]: [] }));
+  }
+
+  /** ✅ Geocode helper (ahora apuntando a routes/geocode) */
+  async function geocodeAddress(query: string): Promise<{ lat: number; lng: number; formatted?: string }> {
+    const key = query.trim().toLowerCase();
+    const cached = geocodeCacheRef.current.get(key);
+    if (cached) return cached;
+
+    // ✅ Ajusta aquí si tu endpoint final es otro:
+    // - "geocode?q=...":   Api("GET", `geocode?q=...&country=gb`, ...)
+    // - "routes/geocode":  Api("GET", `routes/geocode?q=...&country=gb`, ...)
+    const res: any = await Api("GET", `routes/geocode?q=${encodeURIComponent(query)}&country=gb`, null, router);
+
+    const list = res?.data?.data || res?.data || res?.results || [];
+    if (!Array.isArray(list) || !list.length) throw new Error("No geocode results");
+
+    const first = list[0];
+    const lat = Number(first.lat ?? first.latitude);
+    const lng = Number(first.lon ?? first.lng ?? first.longitude);
+    const formatted = first.display_name ?? first.formatted_address ?? query;
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) throw new Error("Invalid geocode coords");
+
+    const value = { lat, lng, formatted };
+    geocodeCacheRef.current.set(key, value);
+    return value;
+  }
+
+  /** ✅ Guarda ruta en sessionStorage para el viewer */
+  function persistRoute(dayKey: string, data: OptimizeResult) {
+    try {
+      sessionStorage.setItem(
+        `route:${dayKey}`,
+        JSON.stringify({
+          dayKey,
+          createdAt: Date.now(),
+          route: data,
+        })
+      );
+    } catch {
+      // ignore storage errors
+    }
+  }
+
+  /** ✅ Generar ruta para un día */
+  async function generateRouteForDay(dayKey: string) {
+    const ids = selectedByDay[dayKey] || [];
+    if (ids.length < 2) return showToast("Selecciona al menos 2 recolecciones", "error");
+
+    const dayCollections = (byDay.get(dayKey) || []).filter((c) => ids.includes(c._id));
+    if (dayCollections.length < 2) return showToast("No se encontraron 2+ recolecciones seleccionadas", "error");
+
+    setRouteLoadingByDay((p) => ({ ...p, [dayKey]: true }));
+    setRouteByDay((p) => ({ ...p, [dayKey]: null }));
+
+    try {
+      // 1) Geocode de todas las direcciones (con cache)
+      const waypoints: Waypoint[] = [];
+      for (const c of dayCollections) {
+        const q = `${c.address} ${c.postcode}`.trim();
+        const coords = await geocodeAddress(q);
+        waypoints.push({
+          address: coords.formatted || c.address,
+          lat: coords.lat,
+          lng: coords.lng,
+          code: (c.postcode || extractPostcode(coords.formatted || c.address) || "").toUpperCase(),
+          timeSlot: pickTimeSlot(c.pickupAt),
+        });
+      }
+
+      // 2) Payload para tu backend de optimize
+      const payload = {
+        preference: "balanced",
+        consumptionL_per_100km: 7.0,
+        fuelPricePerLitre: 1.7,
+        dayStartHour: 8,
+        hqPostcode: "SE16SP", // si quieres configurable, lo pasas de settings
+        waypoints,
+      };
+
+      const res: any = await Api("POST", "routes/optimize", payload, router);
+
+      // 3) Normaliza respuesta
+      const data: OptimizeResult =
+        (res?.data?.status ? res.data.data : res?.data?.data) ||
+        (res?.data?.geometry ? res.data : null) ||
+        null;
+
+      if (!data) throw new Error(res?.data?.message || "No se pudo optimizar");
+
+      setRouteByDay((p) => ({ ...p, [dayKey]: data }));
+
+      // ✅ Guardar para el viewer
+      persistRoute(dayKey, data);
+
+      showToast("Ruta generada", "success");
+    } catch (e: any) {
+      showToast(e?.message || "Error generando ruta", "error");
+    } finally {
+      setRouteLoadingByDay((p) => ({ ...p, [dayKey]: false }));
+    }
   }
 
   return (
     <div className="space-y-6 animate-fade-in">
+      {/* Header */}
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Recolecciones</h1>
-          <p className="text-gray-600 mt-2">Agenda y seguimiento de recolecciones (UK)</p>
+          <p className="text-gray-600 mt-2">Agenda y seguimiento de recolecciones</p>
         </div>
-
         <button onClick={() => setOpenAdd(true)} className="btn-primary flex items-center">
-          <Plus className="h-5 w-5 mr-2" />
-          Agregar recolección
+          <Plus className="h-5 w-5 mr-2" /> Agregar recolección
         </button>
       </div>
 
-      {/* Calendar header like Booking */}
+      {/* Calendario */}
       <div className="card p-0 overflow-hidden">
         <div className="bg-[#0F2A73] text-white px-4 py-3 flex items-center justify-between">
           <button
             className="px-3 py-2 rounded bg-white/10 hover:bg-white/20"
             onClick={() => setAnchor(addDays(anchor, -7))}
-            aria-label="Prev week"
           >
             <ChevronLeft className="h-5 w-5" />
           </button>
-
           <div className="font-semibold flex items-center gap-2">
             <CalendarIcon className="h-5 w-5" />
-            WK -{" "}
-            {Math.ceil(
-              (Number(weekStart) - Number(new Date(weekStart.getFullYear(), 0, 1))) /
-                (7 * 24 * 3600 * 1000)
-            )}{" "}
-            ({weekStart.toISOString().slice(0, 10)} - {addDays(weekStart, 6).toISOString().slice(0, 10)})
+            {weekStart.toLocaleDateString()} - {addDays(weekStart, 6).toLocaleDateString()}
           </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              className="px-3 py-2 rounded bg-white/10 hover:bg-white/20 text-sm"
-              onClick={() => setAnchor(new Date())}
-            >
-              Today
-            </button>
-            <button
-              className="px-3 py-2 rounded bg-white/10 hover:bg-white/20"
-              onClick={() => setAnchor(addDays(anchor, 7))}
-              aria-label="Next week"
-            >
-              <ChevronRight className="h-5 w-5" />
-            </button>
-          </div>
+          <button
+            className="px-3 py-2 rounded bg-white/10 hover:bg-white/20"
+            onClick={() => setAnchor(addDays(anchor, 7))}
+          >
+            <ChevronRight className="h-5 w-5" />
+          </button>
         </div>
 
-        {/* Week grid */}
         <div className="grid grid-cols-7 border-t">
-          {days.map((d) => (
-            <div key={d.toISOString()} className="border-r last:border-r-0">
-              <div className="border-b bg-gray-50 px-2 py-2 text-xs font-semibold">
-                {fmtDayLabel(d)}
-              </div>
+          {days.map((d) => {
+            const dayKey = d.toISOString().slice(0, 10);
+            const dayItems = byDay.get(dayKey) || [];
+            const selectedIds = new Set(selectedByDay[dayKey] || []);
+            const route = routeByDay[dayKey] || null;
+            const routeLoading = !!routeLoadingByDay[dayKey];
 
-              <div className="min-h-[180px] p-2 space-y-2">
-                {loading ? (
-                  <div className="text-xs text-gray-500">Loading...</div>
-                ) : (
-                  <>
-                    {(byDay.get(d.toISOString().slice(0, 10)) || []).map((c) => (
-                      <button
-                        key={c._id}
-                        onClick={() => openSummaryFor(c)}
-                        className="w-full text-left rounded-lg p-3 bg-blue-600 text-white hover:opacity-95 transition"
-                      >
-                        <div className="text-[11px] opacity-95">
-                          {fmtTime(c.pickupAt)} • {c.postcode}
-                        </div>
-                        <div className="text-sm font-semibold truncate">{c.client?.name || "—"}</div>
-                        <div className="text-[12px] opacity-95 line-clamp-2">{c.address}</div>
-                        <div className="mt-2">
-                          <span className={badgeClass(c.status)}>{c.status}</span>
-                        </div>
-                      </button>
-                    ))}
+            return (
+              <div key={d.toISOString()} className="border-r last:border-r-0 min-h-[200px]">
+                <div className="border-b bg-gray-50 px-2 py-2 text-xs font-semibold text-center">
+                  {fmtDayLabel(d)}
+                </div>
 
-                    {!((byDay.get(d.toISOString().slice(0, 10)) || []).length) && (
-                      <div className="text-xs text-gray-400">No recolecciones</div>
-                    )}
-                  </>
-                )}
+                {/* Acciones del día */}
+                <div className="px-2 pt-2 flex items-center justify-between gap-2">
+                  <button
+                    onClick={() => generateRouteForDay(dayKey)}
+                    disabled={(selectedByDay[dayKey]?.length || 0) < 2 || routeLoading}
+                    className={`text-xs px-2 py-1 rounded flex items-center gap-1 ${
+                      (selectedByDay[dayKey]?.length || 0) < 2 || routeLoading
+                        ? "bg-gray-200 text-gray-500"
+                        : "bg-emerald-600 text-white hover:opacity-90"
+                    }`}
+                    title="Generar ruta con seleccionadas"
+                  >
+                    {routeLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Route className="h-3 w-3" />}
+                    Ruta
+                  </button>
+
+                  <button
+                    onClick={() => clearDaySelection(dayKey)}
+                    className="text-xs px-2 py-1 rounded border hover:bg-white"
+                    title="Limpiar selección"
+                  >
+                    Limpiar
+                  </button>
+                </div>
+
+                <div className="p-2 space-y-2">
+                  {dayItems.map((c) => (
+                    <div key={c._id} className="rounded-lg border bg-white p-2">
+                      <div className="flex items-start gap-2">
+                        <input
+                          type="checkbox"
+                          className="mt-1"
+                          checked={selectedIds.has(c._id)}
+                          onChange={() => toggleSelection(dayKey, c._id)}
+                        />
+
+                        <button
+                          onClick={() => {
+                            setSelected(c);
+                            setOpenSummary(true);
+                          }}
+                          className="flex-1 text-left"
+                        >
+                          <div className="text-xs font-bold text-blue-900">{fmtTime(c.pickupAt)}</div>
+                          <div className="text-xs font-semibold truncate">{c.client?.name}</div>
+                          <div className="text-[11px] text-gray-600 truncate">{c.postcode}</div>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+
+                  {loading && <div className="text-xs text-gray-500">Cargando...</div>}
+                  {!loading && dayItems.length === 0 && <div className="text-xs text-gray-400">Sin recolecciones</div>}
+
+                  {/* ✅ Ruta del día (solo resumen + botón a la página completa) */}
+                  {route && (
+                    <div className="mt-2 rounded-lg border overflow-hidden">
+                      <div className="p-2 bg-gray-50">
+                        <div className="text-xs font-semibold text-gray-800">Ruta del día</div>
+                        <div className="text-[11px] text-gray-600">
+                          {route?.total?.distance_km != null ? `${route.total.distance_km.toFixed(1)} km` : ""}
+                          {route?.total?.duration_human ? ` • ${route.total.duration_human}` : ""}
+                          {route?.total?.fuel_cost != null ? ` • £${route.total.fuel_cost.toFixed(2)}` : ""}
+                        </div>
+
+                        <button
+                          className="mt-2 text-xs px-2 py-1 rounded bg-blue-600 text-white hover:opacity-90 inline-flex items-center gap-1"
+                          onClick={() => router.push(`/admin/routes/view?day=${dayKey}`)}
+                        >
+                          <ExternalLink className="h-3 w-3" />
+                          Ver ruta completa
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
-      {/* Summary Modal (second image style) */}
-      <Modal
-        isOpen={openSummary}
-        onClose={() => setOpenSummary(false)}
-        title="Resumen de recolección"
-        size="xlarge"
-      >
-        {!selected ? null : (
-          <div className="space-y-6">
-            <div className="bg-[#1b1a3a] text-white rounded-2xl p-6">
-              <div className="flex items-center justify-between">
-                <div className="text-2xl font-bold">
-                  Recolección - <span className="text-green-400">{selected.status}</span>
-                </div>
-                <button
-                  onClick={() => setOpenSummary(false)}
-                  className="px-3 py-2 rounded bg-white/10 hover:bg-white/20"
-                >
-                  ✕
-                </button>
-              </div>
-
-              <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
-                <div>
-                  <div className="opacity-70">Cliente</div>
-                  <div className="font-semibold">{selected.client?.name || "—"}</div>
-                </div>
-                <div>
-                  <div className="opacity-70">Fecha</div>
-                  <div className="font-semibold">{fmtDateShort(selected.pickupAt)}</div>
-                </div>
-                <div>
-                  <div className="opacity-70">Hora</div>
-                  <div className="font-semibold">{fmtTime(selected.pickupAt)}</div>
-                </div>
-
-                <div className="md:col-span-2">
-                  <div className="opacity-70">Dirección</div>
-                  <div className="font-semibold">{selected.address}</div>
-                </div>
-                <div>
-                  <div className="opacity-70">Postcode</div>
-                  <div className="font-semibold">{selected.postcode}</div>
-                </div>
-              </div>
-
-              <div className="mt-4 flex flex-wrap gap-2">
-                {chip(!!selected.billId, "Bill", Receipt)}
-                {chip(!!selected.guideId, "Guía", FileText)}
-                {chip(!!selected.paymentId, "Pago", CreditCard)}
-              </div>
+      {/* Modal Agregar */}
+      <Modal isOpen={openAdd} onClose={() => setOpenAdd(false)} title="Nueva Recolección" size="large">
+        <div className="space-y-6">
+          {/* SECCIÓN CLIENTE */}
+          <div className="card p-4 border border-gray-200 shadow-none bg-gray-50/30">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold text-gray-900 uppercase tracking-wider">Cliente / Remitente *</h2>
             </div>
 
-            <div className="flex justify-end gap-3">
-              <button
-                className="btn-outline"
-                onClick={() => {
-                  setOpenSummary(false);
-                }}
-              >
-                Cancelar
-              </button>
-
-              <button
-                className="btn-primary"
-                onClick={() => {
-                  const id = selected._id;
-                  setOpenSummary(false);
-                  router.push(`/admin/collections/${id}`);
-                }}
-              >
-                Ver detalle
-              </button>
-            </div>
-          </div>
-        )}
-      </Modal>
-
-      {/* Add Modal */}
-      <Modal isOpen={openAdd} onClose={() => setOpenAdd(false)} title="Agregar recolección" size="xlarge">
-        <div className="space-y-5">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Client selector */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Cliente *</label>
+            <div className="relative mb-3">
+              <Search className="h-4 w-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
-                className="input"
-                placeholder="Buscar cliente..."
-                value={clientQ}
-                onChange={(e) => setClientQ(e.target.value)}
+                value={senderSearch}
+                onChange={(e) => setSenderSearch(e.target.value)}
+                className="input pl-9"
+                placeholder="Buscar por nombre, email o teléfono..."
               />
-              <div className="border rounded-lg mt-2 max-h-56 overflow-auto">
-                {loadingClients ? (
-                  <div className="p-3 text-sm text-gray-500">Loading clients...</div>
-                ) : (
-                  (clients || []).map((c) => {
-                    const active = form.clientId === c._id;
-                    return (
-                      <button
-                        type="button"
-                        key={c._id}
-                        className={
-                          "w-full text-left px-3 py-2 border-b last:border-b-0 hover:bg-gray-50 " +
-                          (active ? "bg-sky-50" : "")
-                        }
-                        onClick={() => setForm((p) => ({ ...p, clientId: c._id }))}
-                      >
-                        <div className="font-semibold">{c.name}</div>
-                        <div className="text-xs text-gray-500">{c.phone || c.email || "—"}</div>
-                      </button>
-                    );
-                  })
-                )}
-                {!loadingClients && !clients?.length && (
-                  <div className="p-3 text-sm text-gray-500">No clients</div>
-                )}
-              </div>
             </div>
 
-            {/* Address */}
+            <select
+              className="input mb-4"
+              value={senderClientId}
+              onChange={(e) => handleClientChange(e.target.value)}
+              disabled={loadingClients}
+            >
+              <option value="">Seleccione un cliente...</option>
+              {filteredClients.map((c) => (
+                <option key={c._id} value={c._id}>
+                  {c.name} — {c.phone}
+                </option>
+              ))}
+            </select>
+
+            {selectedClientDetail && (
+              <div className="p-3 bg-white rounded-lg text-sm text-gray-700 border border-gray-200 shadow-sm">
+                <div className="font-bold text-blue-900">{selectedClientDetail.name}</div>
+                <div>{selectedClientDetail.phone}</div>
+                <div className="text-gray-500 italic">{selectedClientDetail.email}</div>
+              </div>
+            )}
+          </div>
+
+          {/* DETALLES DE RECOLECCIÓN */}
+          <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Dirección *</label>
+              <label className="label">Dirección de Recogida (Editable) *</label>
               <div className="relative">
                 <MapPin className="h-4 w-4 text-gray-400 absolute left-3 top-3" />
-                <input
-                  className="input pl-9"
-                  placeholder="32 Roupell Street..."
+                <textarea
+                  className="input pl-9 min-h-[90px] pt-2"
+                  placeholder="Calle, Ciudad, Estado..."
                   value={form.address}
-                  onChange={(e) => setForm((p) => ({ ...p, address: e.target.value }))}
+                  onChange={(e) => setForm({ ...form, address: e.target.value })}
                 />
               </div>
+            </div>
 
-              <label className="block text-sm font-medium text-gray-700 mb-2 mt-4">Postcode *</label>
+            <div className="w-full md:w-1/3">
+              <label className="label">Postcode (Editable) *</label>
               <input
                 className="input"
-                placeholder="SE1 8TB"
+                placeholder="Ej. SE1 2AB"
                 value={form.postcode}
-                onChange={(e) => setForm((p) => ({ ...p, postcode: e.target.value }))}
+                onChange={(e) => setForm({ ...form, postcode: e.target.value })}
               />
             </div>
           </div>
 
-          {/* Pickup datetime */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* FECHA, HORA Y NOTAS */}
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Fecha *</label>
+              <label className="label">Fecha</label>
               <input
                 type="date"
                 className="input"
                 value={form.pickupDate}
-                onChange={(e) => setForm((p) => ({ ...p, pickupDate: e.target.value }))}
+                onChange={(e) => setForm({ ...form, pickupDate: e.target.value })}
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Hora *</label>
+              <label className="label">Hora Aproximada</label>
               <div className="relative">
                 <Clock className="h-4 w-4 text-gray-400 absolute left-3 top-3" />
                 <input
                   type="time"
                   className="input pl-9"
                   value={form.pickupTime}
-                  onChange={(e) => setForm((p) => ({ ...p, pickupTime: e.target.value }))}
+                  onChange={(e) => setForm({ ...form, pickupTime: e.target.value })}
                 />
               </div>
             </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Notas</label>
+            <div className="md:col-span-1">
+              <label className="label">Notas / Instrucciones</label>
               <input
                 className="input"
-                placeholder="Opcional..."
+                placeholder="Opcional"
                 value={form.notes}
-                onChange={(e) => setForm((p) => ({ ...p, notes: e.target.value }))}
+                onChange={(e) => setForm({ ...form, notes: e.target.value })}
               />
             </div>
           </div>
 
           <div className="flex justify-end gap-3 pt-4 border-t">
-            <button className="btn-outline" onClick={() => setOpenAdd(false)} type="button">
+            <button className="btn-outline" onClick={() => setOpenAdd(false)}>
               Cancelar
             </button>
-            <button className="btn-primary" onClick={createCollection} type="button">
-              Crear recolección
+            <button className="btn-primary" onClick={createCollection}>
+              Agendar Recolección
             </button>
           </div>
         </div>
+      </Modal>
+
+      {/* Summary Modal */}
+      <Modal isOpen={openSummary} onClose={() => setOpenSummary(false)} title="Detalle de Recolección" size="large">
+        {selected && (
+          <div className="space-y-4">
+            <div className="bg-[#0F2A73] text-white p-6 rounded-2xl shadow-lg">
+              <h3 className="text-2xl font-bold mb-2">{selected.client?.name}</h3>
+              <div className="space-y-2 opacity-90">
+                <p className="flex items-start gap-2">
+                  <MapPin className="h-5 w-5 mt-1 shrink-0" /> {selected.address}, {selected.postcode}
+                </p>
+                <p className="flex items-center gap-2">
+                  <Clock className="h-5 w-5 shrink-0" /> {new Date(selected.pickupAt).toLocaleDateString()} -{" "}
+                  {fmtTime(selected.pickupAt)}
+                </p>
+              </div>
+            </div>
+            <button className="btn-primary w-full py-3" onClick={() => router.push(`/admin/collections/${selected._id}`)}>
+              Ver Detalles Completos
+            </button>
+          </div>
+        )}
       </Modal>
     </div>
   );
