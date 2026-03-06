@@ -9,28 +9,48 @@ import { Api } from "@/contexts/AuthContext";
 import { useToast } from "@/contexts/ToastContext";
 import Modal from "@/components/Modal";
 
-interface Beneficiary {
-  name: string;
-  relationship?: string;
-  phone?: string;
-  email?: string;
+/** =========================
+ *  Types aligned with new backend model
+ *  ========================= */
+type EntityType = "PERSON" | "COMPANY";
+
+type PersonPayload = {
+  entityType: EntityType;
+
+  firstName?: string;
+  lastName?: string;
+  companyName?: string;
+
   identification?: string;
-  address?: string;
-}
+  email?: string;
+
+  phone?: string;
+  mobile?: string;
+
+  addressLine?: string;
+  cityId?: string | null;
+  cityLabel?: string;
+  zipCode?: string;
+
+  location?: string;
+
+  // Only for beneficiaries
+  relationship?: string;
+};
 
 interface Client {
   _id: string;
-  name: string;
-  email: string;
-  phone: string;
-  identification?: string;
-  address?: {
-    street?: string;
-    city?: string;
-    state?: string;
-    zipCode?: string;
-  };
-  beneficiaries: Beneficiary[];
+  agency?: string;
+  profile: PersonPayload;
+  beneficiaries: PersonPayload[];
+  isActive: boolean;
+}
+
+interface City {
+  _id: string;
+  label: string;
+  postalCode?: string | null;
+  isActive: boolean;
 }
 
 interface TariffRange {
@@ -81,6 +101,19 @@ type ServiceRow = {
   quantity: number;
 };
 
+type PackageRow = {
+  id: string;
+  description: string;
+  value: number;   // “Valor”
+  length: number;  // L
+  width: number;   // W
+  height: number;  // H
+  weight: number;  // Wt (peso real)
+  pcs: number;     // Pcs
+};
+
+const VOLUMETRIC_DIVISOR = 5000; // 👈 ajustable: 5000 o 6000 según tu regla
+
 type InvoiceMode = "ECUADOR" | "COLOMBIA";
 
 const toNum = (v: any) => {
@@ -88,14 +121,108 @@ const toNum = (v: any) => {
   return Number.isFinite(n) ? n : 0;
 };
 
+
+
+const emptyPerson = (): PersonPayload => ({
+  entityType: "PERSON",
+  firstName: "",
+  lastName: "",
+  companyName: "",
+  identification: "",
+  email: "",
+  phone: "",
+  mobile: "",
+  addressLine: "",
+  cityId: null,
+  cityLabel: "",
+  zipCode: "",
+  location: "",
+});
+const normalizePerson = (p: any): PersonPayload => {
+  const base = emptyPerson();
+  if (!p) return base;
+
+  // Si ya viene con entityType, asumimos que ya es nuevo schema
+  if (p.entityType) return { ...base, ...p };
+
+  // Si viene viejo (name/email/phone/address...)
+  const fullName = (p.name || "").toString().trim();
+  const parts = fullName.split(" ").filter(Boolean);
+
+  return {
+    ...base,
+    entityType: "PERSON",
+    firstName: (parts[0] || "").trim(),
+    lastName: parts.slice(1).join(" ").trim(),
+    companyName: "",
+    email: (p.email || "").toString(),
+    phone: (p.phone || "").toString(),
+    identification: (p.identification || "").toString(),
+    // address viejo (street/city/state/zipCode) -> addressLine + zipCode
+    addressLine: [
+      p.address?.street || "",
+      p.address?.city || "",
+      p.address?.state || "",
+    ]
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim(),
+    zipCode: (p.address?.zipCode || p.zipCode || "").toString(),
+    cityLabel: (p.cityLabel || p.address?.city || "").toString(),
+    cityId: p.cityId ?? null,
+    mobile: (p.mobile || "").toString(),
+    location: (p.location || "").toString(),
+  };
+};
+
+const normalizeClient = (c: any): Client => {
+  // nuevo schema: { profile, beneficiaries, ... }
+  if (c?.profile) {
+    return {
+      ...c,
+      profile: normalizePerson(c.profile),
+      beneficiaries: Array.isArray(c.beneficiaries) ? c.beneficiaries.map(normalizePerson) : [],
+    };
+  }
+
+  // viejo schema: { name, email, phone, beneficiaries:[{name,...}], ... }
+  return {
+    ...c,
+    profile: normalizePerson(c),
+    beneficiaries: Array.isArray(c?.beneficiaries) ? c.beneficiaries.map(normalizePerson) : [],
+  };
+};
+
+const emptyBeneficiary = (): PersonPayload => ({
+  ...emptyPerson(),
+  relationship: "",
+});
+
+const displayPersonName = (p?: PersonPayload | null) => {
+  if (!p) return "—";
+  if (p.entityType === "COMPANY") return (p.companyName || "Company").trim();
+  const full = `${p.firstName || ""} ${p.lastName || ""}`.trim();
+  return full || "Person";
+};
+
+const displayClientLabel = (c: any) => {
+  const client = normalizeClient(c);
+  const p = client.profile;
+  const main = displayPersonName(p);
+  const contact = (p.email || p.phone || p.mobile || "").trim();
+  return contact ? `${main} — ${contact}` : main;
+};
+
 export default function CreateGuidePage() {
   const router = useRouter();
   const { showToast } = useToast();
 
-  // ====== data base ======
+  // ====== base data ======
   const [clients, setClients] = useState<Client[]>([]);
   const [tariffs, setTariffs] = useState<Tariff[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [cities, setCities] = useState<City[]>([]);
+  const [loadingCities, setLoadingCities] = useState<boolean>(true);
 
   const [loadingClients, setLoadingClients] = useState(true);
   const [loadingTariffs, setLoadingTariffs] = useState(true);
@@ -105,7 +232,6 @@ export default function CreateGuidePage() {
   const [senderSearch, setSenderSearch] = useState("");
   const [senderClientId, setSenderClientId] = useState("");
   const [senderClient, setSenderClient] = useState<Client | null>(null);
-
   const [beneficiaryIndex, setBeneficiaryIndex] = useState<number>(0);
 
   // ====== Basic fields ======
@@ -113,9 +239,7 @@ export default function CreateGuidePage() {
   const [observations, setObservations] = useState<string>("");
   const [tariffHeading, setTariffHeading] = useState<string>("");
 
-  // ====== Bitácora interna (NEW) ======
-  // 👉 Ajusta el nombre del campo en payload si tu backend lo espera diferente
-  // (por ejemplo: internalNotes, internalLog, logComment, etc.)
+  // ====== Bitácora interna ======
   const [internalComments, setInternalComments] = useState<string>("");
   const INTERNAL_COMMENTS_MAX = 1000;
 
@@ -145,80 +269,128 @@ export default function CreateGuidePage() {
   const [invoiceSearch, setInvoiceSearch] = useState("");
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string>("");
 
-  // ====== Invoice Mode (Ecuador/Colombia) ======
+  // ====== Invoice Mode ======
   const [invoiceMode, setInvoiceMode] = useState<InvoiceMode>("ECUADOR");
 
   // ====== Pagination invoices ======
   const [invoicePage, setInvoicePage] = useState<number>(1);
   const INVOICE_PAGE_SIZE = 8;
 
-  // ====== Create Client Modal (Sender) ======
+  // ====== Create Client Modal ======
   const [showCreateClientModal, setShowCreateClientModal] = useState(false);
   const [creatingClient, setCreatingClient] = useState(false);
-  const [clientForm, setClientForm] = useState({
-    name: "",
-    email: "",
-    phone: "",
-    identification: "",
-    address: { street: "", city: "", state: "", zipCode: "" },
-    beneficiaries: [{ name: "", relationship: "", phone: "", email: "", identification: "", address: "" }] as Beneficiary[],
+  const [addBeneficiaryNow, setAddBeneficiaryNow] = useState(false);
+
+  const [clientForm, setClientForm] = useState<{
+    agency: string;
+    profile: PersonPayload;
+    beneficiary: PersonPayload;
+  }>({
+    agency: "Via logistics",
+    profile: emptyPerson(),
+    beneficiary: emptyBeneficiary(),
   });
 
-  // ====== Edit Client Modal (Sender) ======
+  // ====== Edit Client Modal ======
   const [showEditClientModal, setShowEditClientModal] = useState(false);
   const [updatingClient, setUpdatingClient] = useState(false);
-  const [editClientForm, setEditClientForm] = useState({
-    name: "",
-    email: "",
-    phone: "",
-    identification: "",
-    address: { street: "", city: "", state: "", zipCode: "" },
+  const [editClientForm, setEditClientForm] = useState<{
+    agency: string;
+    profile: PersonPayload;
+  }>({
+    agency: "Via logistics",
+    profile: emptyPerson(),
   });
 
-  // ====== Add Beneficiary Modal (Recipient) ======
+  // ====== Add Beneficiary Modal ======
   const [showAddBeneficiaryModal, setShowAddBeneficiaryModal] = useState(false);
   const [savingBeneficiary, setSavingBeneficiary] = useState(false);
-  const [beneficiaryForm, setBeneficiaryForm] = useState<Beneficiary>({
-    name: "",
-    relationship: "",
-    phone: "",
-    email: "",
-    identification: "",
-    address: "",
-  });
+  const [beneficiaryForm, setBeneficiaryForm] = useState<PersonPayload>(emptyBeneficiary());
 
-  // ====== Edit Beneficiary Modal (Recipient) ======
+  // ====== Edit Beneficiary Modal ======
   const [showEditBeneficiaryModal, setShowEditBeneficiaryModal] = useState(false);
   const [updatingBeneficiary, setUpdatingBeneficiary] = useState(false);
-  const [editBeneficiaryForm, setEditBeneficiaryForm] = useState<Beneficiary>({
-    name: "",
-    relationship: "",
-    phone: "",
-    email: "",
-    identification: "",
-    address: "",
-  });
+  const [editBeneficiaryForm, setEditBeneficiaryForm] = useState<PersonPayload>(emptyBeneficiary());
 
   // ====== Saving guide ======
   const [saving, setSaving] = useState(false);
 
-  // -------------------------
-  // Tax calculation
-  // -------------------------
+  /** =========================
+   *  Cities helpers
+   *  ========================= */
+  const cityById = useMemo(() => {
+    const map = new Map<string, City>();
+    for (const c of cities) map.set(c._id, c);
+    return map;
+  }, [cities]);
+
+  const applyCitySelection = (person: PersonPayload, cityId: string) => {
+    const city = cityById.get(cityId);
+    if (!city) {
+      return {
+        ...person,
+        cityId: cityId || null,
+        cityLabel: "",
+      };
+    }
+    // auto fill label + zipCode from postalCode
+    return {
+      ...person,
+      cityId: city._id,
+      cityLabel: city.label,
+      zipCode: (city.postalCode || "").toString(),
+    };
+  };
+
+  const [packages, setPackages] = useState<PackageRow[]>([
+    { id: crypto.randomUUID(), description: "", value: 0, length: 0, width: 0, height: 0, weight: 0, pcs: 1 },
+  ]);
+
+  const volumetricWeight = (p: PackageRow) => {
+    const l = toNum(p.length);
+    const w = toNum(p.width);
+    const h = toNum(p.height);
+    if (!l || !w || !h) return 0;
+    return Number(((l * w * h) / VOLUMETRIC_DIVISOR).toFixed(2));
+  };
+
+  const packageChargeableWeight = (p: PackageRow) => {
+    const real = toNum(p.weight);
+    const vol = volumetricWeight(p);
+    return Math.max(real, vol);
+  };
+
+  const packagesDeclaredValue = useMemo(() => {
+    return Number(packages.reduce((sum, p) => sum + toNum(p.value), 0).toFixed(2));
+  }, [packages]);
+
+  const packagesTotalWeight = useMemo(() => {
+    // total “Wt” real sumado
+    return Number(packages.reduce((sum, p) => sum + toNum(p.weight), 0).toFixed(2));
+  }, [packages]);
+
+  const packagesChargeableWeight = useMemo(() => {
+    // suma de “peso a cobrar” por paquete
+    return Number(packages.reduce((sum, p) => sum + packageChargeableWeight(p), 0).toFixed(2));
+  }, [packages]);
+
+  /** =========================
+   *  Tax calculation
+   *  ========================= */
   useEffect(() => {
     const dv = toNum(declaredValue || 0);
     const calculatedTax = Number((dv * 0.19).toFixed(2));
     setTax(calculatedTax);
   }, [declaredValue]);
 
-  // -------------------------
-  // Fetch base data
-  // -------------------------
+  /** =========================
+   *  Fetch base data
+   *  ========================= */
   useEffect(() => {
     (async () => {
       try {
         const c: any = await Api("GET", "clients", null, router);
-        if (c?.success) setClients(c.clients || []);
+        if (c?.success) setClients((c.clients || []).map(normalizeClient));
       } catch {
         showToast("Error loading clients", "error");
       } finally {
@@ -236,11 +408,24 @@ export default function CreateGuidePage() {
         setLoadingTariffs(false);
       }
     })();
+
+    (async () => {
+      setLoadingCities(true);
+      try {
+        // loads all active cities
+        const r: any = await Api("GET", "cities", null, router);
+        if (r?.success) setCities(r.cities || []);
+      } catch {
+        showToast("Error loading cities", "error");
+      } finally {
+        setLoadingCities(false);
+      }
+    })();
   }, [router, showToast]);
 
-  // -------------------------
-  // Load sender client detail
-  // -------------------------
+  /** =========================
+   *  Load sender client detail
+   *  ========================= */
   useEffect(() => {
     if (!senderClientId) {
       setSenderClient(null);
@@ -254,7 +439,7 @@ export default function CreateGuidePage() {
       try {
         const data: any = await Api("GET", `clients/${senderClientId}`, null, router);
         if (data?.success) {
-          setSenderClient(data.client);
+          setSenderClient(normalizeClient(data.client));
           setBeneficiaryIndex(0);
         }
       } catch {
@@ -263,16 +448,15 @@ export default function CreateGuidePage() {
     })();
   }, [senderClientId, router, showToast]);
 
-  // -------------------------
-  // Load invoices for sender (ONLY available without guide)
-  // -------------------------
+  /** =========================
+   *  Load invoices for sender (only available without guide)
+   *  ========================= */
   useEffect(() => {
     if (!senderClientId) return;
 
     setLoadingInvoices(true);
     (async () => {
       try {
-        // Prefer backend filter
         const data: any = await Api("GET", `invoices/by-client/${senderClientId}?available=1`, null, router);
 
         if (data?.success) {
@@ -285,7 +469,6 @@ export default function CreateGuidePage() {
 
         setInvoices([]);
       } catch {
-        // fallback: load all then filter
         try {
           const raw: any = await Api("GET", `invoices/by-client/${senderClientId}`, null, router);
           const all: Invoice[] = raw?.invoices || [];
@@ -302,9 +485,9 @@ export default function CreateGuidePage() {
     })();
   }, [senderClientId, router, showToast]);
 
-  // -------------------------
-  // Selected invoice
-  // -------------------------
+  /** =========================
+   *  Selected invoice helpers
+   *  ========================= */
   const selectedInvoice = useMemo(() => {
     return invoices.find((i) => i._id === selectedInvoiceId) || null;
   }, [invoices, selectedInvoiceId]);
@@ -324,17 +507,18 @@ export default function CreateGuidePage() {
 
     return parts.join(", ");
   };
-
-  // Declared value changes depending on mode
   useEffect(() => {
-    if (!selectedInvoice) return;
-    // Siempre usa el total original de la invoice (independiente del modo)
-    setDeclaredValue(toNum(selectedInvoice.total || 0));
-  }, [selectedInvoice]);
+    setDeclaredValue(packagesDeclaredValue);
+  }, [packagesDeclaredValue]);
 
-  // -------------------------
-  // Calculate tariff by weight
-  // -------------------------
+  useEffect(() => {
+    // Auto toma peso a cobrar de paquetes
+    setMeasureValue(packagesChargeableWeight);
+  }, [packagesChargeableWeight]);
+
+  /** =========================
+   *  Calculate tariff by weight
+   *  ========================= */
   useEffect(() => {
     if (!tariffId || !measureValue || measureValue <= 0) {
       setShippingPrice(0);
@@ -359,9 +543,9 @@ export default function CreateGuidePage() {
     })();
   }, [tariffId, measureValue, router]);
 
-  // -------------------------
-  // Services totals
-  // -------------------------
+  /** =========================
+   *  Services totals
+   *  ========================= */
   const servicesTotal = useMemo(() => {
     return services.reduce((sum, s) => {
       if (!s.included) return sum;
@@ -382,26 +566,30 @@ export default function CreateGuidePage() {
     return base + servicesTotal + extras;
   }, [shippingPrice, servicesTotal, insurance, tax, otherCharges, commission, discount]);
 
-  // -------------------------
-  // Filter clients
-  // -------------------------
+  /** =========================
+   *  Filter clients
+   *  ========================= */
   const filteredClients = useMemo(() => {
     const t = senderSearch.toLowerCase().trim();
     if (!t) return clients;
 
     return clients.filter((c) => {
+      const p = c.profile || emptyPerson();
+      const name = displayPersonName(p).toLowerCase();
       return (
-        c.name?.toLowerCase().includes(t) ||
-        c.email?.toLowerCase().includes(t) ||
-        c.phone?.toLowerCase().includes(t) ||
-        c.identification?.toLowerCase().includes(t)
+        name.includes(t) ||
+        (p.companyName || "").toLowerCase().includes(t) ||
+        (p.email || "").toLowerCase().includes(t) ||
+        (p.phone || "").toLowerCase().includes(t) ||
+        (p.mobile || "").toLowerCase().includes(t) ||
+        (p.identification || "").toLowerCase().includes(t)
       );
     });
   }, [clients, senderSearch]);
 
-  // -------------------------
-  // Filter invoices + pagination
-  // -------------------------
+  /** =========================
+   *  Filter invoices + pagination
+   *  ========================= */
   const filteredInvoices = useMemo(() => {
     const t = invoiceSearch.toLowerCase().trim();
     if (!t) return invoices;
@@ -419,58 +607,48 @@ export default function CreateGuidePage() {
 
   useEffect(() => setInvoicePage(1), [invoiceSearch]);
 
-  // -------------------------
-  // Create Client Modal helpers
-  // -------------------------
-  const updateClientField = (path: string, value: string) => {
-    setClientForm((prev) => {
-      const keys = path.split(".");
-      const copy: any = { ...prev };
-      let cur = copy;
-      for (let i = 0; i < keys.length - 1; i++) {
-        cur[keys[i]] = { ...cur[keys[i]] };
-        cur = cur[keys[i]];
-      }
-      cur[keys[keys.length - 1]] = value;
-      return copy;
-    });
+  /** =========================
+   *  Create Client Modal helpers
+   *  ========================= */
+  const updateClientProfile = (patch: Partial<PersonPayload>) => {
+    setClientForm((p) => ({ ...p, profile: { ...p.profile, ...patch } }));
   };
 
-  const updateBeneficiaryField = (index: number, field: keyof Beneficiary, value: string) => {
-    setClientForm((prev) => {
-      const list = [...prev.beneficiaries];
-      list[index] = { ...list[index], [field]: value };
-      return { ...prev, beneficiaries: list };
-    });
+  const updateClientBeneficiary = (patch: Partial<PersonPayload>) => {
+    setClientForm((p) => ({ ...p, beneficiary: { ...p.beneficiary, ...patch } }));
   };
 
-  const addBeneficiary = () => {
-    setClientForm((prev) => ({
-      ...prev,
-      beneficiaries: [...prev.beneficiaries, { name: "", relationship: "", phone: "", email: "", identification: "", address: "" }],
-    }));
-  };
-
-  const removeBeneficiary = (index: number) => {
-    setClientForm((prev) => {
-      if (prev.beneficiaries.length === 1) return prev;
-      const list = prev.beneficiaries.filter((_, i) => i !== index);
-      return { ...prev, beneficiaries: list };
-    });
+  const isPersonNameValid = (p: PersonPayload) => {
+    if (p.entityType === "COMPANY") return !!p.companyName?.trim();
+    return !!p.firstName?.trim() || !!p.lastName?.trim();
   };
 
   const handleCreateClient = async (e: React.FormEvent) => {
     e.preventDefault();
     setCreatingClient(true);
+
     try {
-      const payload = {
-        name: clientForm.name,
-        email: clientForm.email,
-        phone: clientForm.phone,
-        identification: clientForm.identification,
-        address: clientForm.address,
-        beneficiaries: clientForm.beneficiaries,
+      const p = clientForm.profile;
+
+      if (!isPersonNameValid(p)) {
+        showToast("Client name is required (first/last or company name)", "error");
+        return;
+      }
+
+      const payload: any = {
+        agency: clientForm.agency,
+        profile: clientForm.profile,
+        beneficiaries: [],
       };
+
+      if (addBeneficiaryNow) {
+        const b = clientForm.beneficiary;
+        if (!isPersonNameValid(b)) {
+          showToast("Beneficiary name is required (first/last or company name)", "error");
+          return;
+        }
+        payload.beneficiaries = [b];
+      }
 
       const data: any = await Api("POST", "clients", payload, router);
       if (!data?.success) {
@@ -479,18 +657,17 @@ export default function CreateGuidePage() {
       }
 
       const newClient: Client = data.client;
+
       setClients((prev) => [newClient, ...prev]);
       setSenderClientId(newClient._id);
       setShowCreateClientModal(false);
 
       // reset form
+      setAddBeneficiaryNow(false);
       setClientForm({
-        name: "",
-        email: "",
-        phone: "",
-        identification: "",
-        address: { street: "", city: "", state: "", zipCode: "" },
-        beneficiaries: [{ name: "", relationship: "", phone: "", email: "", identification: "", address: "" }],
+        agency: "Via logistics",
+        profile: emptyPerson(),
+        beneficiary: emptyBeneficiary(),
       });
 
       showToast("Client created successfully", "success");
@@ -501,9 +678,9 @@ export default function CreateGuidePage() {
     }
   };
 
-  // -------------------------
-  // Edit Client (Sender)
-  // -------------------------
+  /** =========================
+   *  Edit Client (Sender)
+   *  ========================= */
   const openEditClient = () => {
     if (!senderClient || !senderClientId) {
       showToast("Select a client first", "error");
@@ -511,51 +688,27 @@ export default function CreateGuidePage() {
     }
 
     setEditClientForm({
-      name: senderClient.name || "",
-      email: senderClient.email || "",
-      phone: senderClient.phone || "",
-      identification: senderClient.identification || "",
-      address: {
-        street: senderClient.address?.street || "",
-        city: senderClient.address?.city || "",
-        state: senderClient.address?.state || "",
-        zipCode: senderClient.address?.zipCode || "",
-      },
+      agency: senderClient.agency || "Via logistics",
+      profile: { ...emptyPerson(), ...(senderClient.profile || {}) },
     });
 
     setShowEditClientModal(true);
   };
 
-  const updateEditClientField = (path: string, value: string) => {
-    setEditClientForm((prev) => {
-      const keys = path.split(".");
-      const copy: any = { ...prev };
-      let cur = copy;
-      for (let i = 0; i < keys.length - 1; i++) {
-        cur[keys[i]] = { ...cur[keys[i]] };
-        cur = cur[keys[i]];
-      }
-      cur[keys[keys.length - 1]] = value;
-      return copy;
-    });
+  const updateEditClientProfile = (patch: Partial<PersonPayload>) => {
+    setEditClientForm((p) => ({ ...p, profile: { ...p.profile, ...patch } }));
   };
 
   const handleUpdateClient = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!senderClientId) return;
+    if (!senderClientId || !senderClient) return;
 
     setUpdatingClient(true);
     try {
-      // Mantener beneficiaries actuales
-      const currentBeneficiaries = senderClient?.beneficiaries || [];
-
       const payload = {
-        name: editClientForm.name,
-        email: editClientForm.email,
-        phone: editClientForm.phone,
-        identification: editClientForm.identification,
-        address: editClientForm.address,
-        beneficiaries: currentBeneficiaries,
+        agency: editClientForm.agency,
+        profile: editClientForm.profile,
+        beneficiaries: senderClient.beneficiaries || [],
       };
 
       const updated: any = await Api("PUT", `clients/${senderClientId}`, payload, router);
@@ -564,13 +717,10 @@ export default function CreateGuidePage() {
         return;
       }
 
-      // refrescar senderClient desde backend
       const refreshed: any = await Api("GET", `clients/${senderClientId}`, null, router);
       if (refreshed?.success) {
-        setSenderClient(refreshed.client);
-
-        // actualizar lista clientes en memoria
-        setClients((prev) => prev.map((c) => (c._id === senderClientId ? { ...c, ...refreshed.client } : c)));
+        setSenderClient(normalizeClient(refreshed.client));
+        setClients((prev) => prev.map((c) => (c._id === senderClientId ? normalizeClient(refreshed.client) : c)));
       }
 
       setShowEditClientModal(false);
@@ -582,9 +732,9 @@ export default function CreateGuidePage() {
     }
   };
 
-  // -------------------------
-  // Add Beneficiary to sender client
-  // -------------------------
+  /** =========================
+   *  Add Beneficiary to sender client
+   *  ========================= */
   const handleAddBeneficiaryToSender = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -592,8 +742,9 @@ export default function CreateGuidePage() {
       showToast("Select a sender first", "error");
       return;
     }
-    if (!beneficiaryForm.name?.trim()) {
-      showToast("Beneficiary name is required", "error");
+
+    if (!isPersonNameValid(beneficiaryForm)) {
+      showToast("Beneficiary name is required (first/last or company name)", "error");
       return;
     }
 
@@ -601,21 +752,18 @@ export default function CreateGuidePage() {
     try {
       // Ensure we have current sender data
       const res = (await Api("GET", `clients/${senderClientId}`, null, router)) as any;
-
       const current: Client | null = senderClient ?? (res?.client as Client | null);
 
       if (!current) {
         showToast("Error loading sender client", "error");
         return;
       }
+
       const beneficiaries = [...(current?.beneficiaries || []), beneficiaryForm];
 
       const payload = {
-        name: current.name,
-        email: current.email,
-        phone: current.phone,
-        identification: current.identification,
-        address: current.address,
+        agency: current.agency || "Via logistics",
+        profile: current.profile,
         beneficiaries,
       };
 
@@ -625,17 +773,14 @@ export default function CreateGuidePage() {
         return;
       }
 
-      // Refresh sender client
       const refreshed: any = await Api("GET", `clients/${senderClientId}`, null, router);
       if (refreshed?.success) {
         setSenderClient(refreshed.client);
         setBeneficiaryIndex(Math.max(0, (refreshed.client?.beneficiaries?.length || 1) - 1));
-
-        // actualizar lista clientes (por si se usa en otros lados)
         setClients((prev) => prev.map((c) => (c._id === senderClientId ? { ...c, ...refreshed.client } : c)));
       }
 
-      setBeneficiaryForm({ name: "", relationship: "", phone: "", email: "", identification: "", address: "" });
+      setBeneficiaryForm(emptyBeneficiary());
       setShowAddBeneficiaryModal(false);
       showToast("Beneficiary added successfully", "success");
     } catch (err: any) {
@@ -645,9 +790,9 @@ export default function CreateGuidePage() {
     }
   };
 
-  // -------------------------
-  // Edit Beneficiary (Recipient)
-  // -------------------------
+  /** =========================
+   *  Edit Beneficiary
+   *  ========================= */
   const beneficiaryPreview = useMemo(() => {
     if (!senderClient?.beneficiaries?.length) return null;
     return senderClient.beneficiaries[beneficiaryIndex] || null;
@@ -664,12 +809,8 @@ export default function CreateGuidePage() {
     }
 
     setEditBeneficiaryForm({
-      name: beneficiaryPreview.name || "",
-      relationship: beneficiaryPreview.relationship || "",
-      phone: beneficiaryPreview.phone || "",
-      email: beneficiaryPreview.email || "",
-      identification: beneficiaryPreview.identification || "",
-      address: beneficiaryPreview.address || "",
+      ...emptyBeneficiary(),
+      ...beneficiaryPreview,
     });
 
     setShowEditBeneficiaryModal(true);
@@ -679,14 +820,13 @@ export default function CreateGuidePage() {
     e.preventDefault();
 
     if (!senderClientId || !senderClient) return;
-    if (!editBeneficiaryForm.name?.trim()) {
-      showToast("Beneficiary name is required", "error");
+    if (!isPersonNameValid(editBeneficiaryForm)) {
+      showToast("Beneficiary name is required (first/last or company name)", "error");
       return;
     }
 
     setUpdatingBeneficiary(true);
     try {
-      // Copiamos array y reemplazamos índice seleccionado
       const beneficiaries = [...(senderClient.beneficiaries || [])];
       if (beneficiaryIndex < 0 || beneficiaryIndex >= beneficiaries.length) {
         showToast("Invalid beneficiary selected", "error");
@@ -699,11 +839,8 @@ export default function CreateGuidePage() {
       };
 
       const payload = {
-        name: senderClient.name,
-        email: senderClient.email,
-        phone: senderClient.phone,
-        identification: senderClient.identification,
-        address: senderClient.address,
+        agency: senderClient.agency || "Via logistics",
+        profile: senderClient.profile,
         beneficiaries,
       };
 
@@ -713,7 +850,6 @@ export default function CreateGuidePage() {
         return;
       }
 
-      // refrescar sender client
       const refreshed: any = await Api("GET", `clients/${senderClientId}`, null, router);
       if (refreshed?.success) {
         setSenderClient(refreshed.client);
@@ -729,21 +865,33 @@ export default function CreateGuidePage() {
     }
   };
 
-  // -------------------------
-  // Save Guide
-  // -------------------------
+  /** =========================
+   *  Save Guide
+   *  ========================= */
   const handleSaveGuide = async () => {
     try {
+      if (!packages.length) {
+        showToast("Add at least one package", "error");
+        return;
+      }
+      const hasAnyData = packages.some(p =>
+        p.description.trim() ||
+        toNum(p.value) > 0 ||
+        toNum(p.length) > 0 ||
+        toNum(p.width) > 0 ||
+        toNum(p.height) > 0 ||
+        toNum(p.weight) > 0
+      );
+      if (!hasAnyData) {
+        showToast("Fill at least one package detail", "error");
+        return;
+      }
       if (!senderClientId) {
         showToast("Select a sender (client)", "error");
         return;
       }
       if (!senderClient?.beneficiaries?.length) {
         showToast("Sender has no beneficiaries. Add at least one.", "error");
-        return;
-      }
-      if (!selectedInvoiceId) {
-        showToast("Select an invoice (package) available without guide", "error");
         return;
       }
       if (!tariffId) {
@@ -755,7 +903,6 @@ export default function CreateGuidePage() {
         return;
       }
 
-      // NEW: validación simple de bitácora interna
       const trimmedInternal = internalComments.trim();
       if (trimmedInternal.length > INTERNAL_COMMENTS_MAX) {
         showToast(`Internal comments exceeds ${INTERNAL_COMMENTS_MAX} characters`, "error");
@@ -786,11 +933,20 @@ export default function CreateGuidePage() {
           quantity: s.quantity,
           included: s.included,
         })),
-        invoiceIds: [selectedInvoiceId],
-        invoiceMode,
-
-        // ====== Bitácora interna (NEW) ======
+        invoiceIds: [], // compat con backend viejo si algo lo usa
+        // invoiceMode,  // opcional: quítalo si ya no aplica
         internalComments: trimmedInternal || "",
+        packages: packages.map(p => ({
+          description: p.description,
+          value: toNum(p.value),
+          length: toNum(p.length),
+          width: toNum(p.width),
+          height: toNum(p.height),
+          weight: toNum(p.weight),
+          pcs: toNum(p.pcs),
+          volumetricWeight: volumetricWeight(p),
+          chargeableWeight: packageChargeableWeight(p),
+        })),
       };
 
       const data: any = await Api("POST", "guides", payload, router);
@@ -808,13 +964,11 @@ export default function CreateGuidePage() {
     }
   };
 
-  // -------------------------
-  // UI helpers
-  // -------------------------
+  /** =========================
+   *  UI helpers
+   *  ========================= */
   const setServiceIncluded = (id: string, included: boolean) => {
-    setServices((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, included, quantity: included ? Math.max(1, s.quantity) : 0 } : s)),
-    );
+    setServices((prev) => prev.map((s) => (s.id === id ? { ...s, included, quantity: included ? Math.max(1, s.quantity) : 0 } : s)));
   };
 
   const setServiceQty = (id: string, qty: number) => {
@@ -878,7 +1032,7 @@ export default function CreateGuidePage() {
               <option value="">Choose...</option>
               {filteredClients.map((c) => (
                 <option key={c._id} value={c._id}>
-                  {c.name} — {c.email}
+                  {displayClientLabel(c)}
                 </option>
               ))}
             </select>
@@ -886,13 +1040,14 @@ export default function CreateGuidePage() {
 
           {senderClient && (
             <div className="mt-4 text-sm text-gray-700 space-y-1">
-              <div className="font-medium">{senderClient.name}</div>
-              <div>{senderClient.email}</div>
-              <div>{senderClient.phone}</div>
-              {senderClient.identification && <div>ID: {senderClient.identification}</div>}
+              <div className="font-medium">{displayPersonName(senderClient.profile)}</div>
+              {!!senderClient.profile.email && <div>{senderClient.profile.email}</div>}
+              {!!senderClient.profile.phone && <div>{senderClient.profile.phone}</div>}
+              {!!senderClient.profile.mobile && <div>{senderClient.profile.mobile}</div>}
+              {!!senderClient.profile.identification && <div>ID: {senderClient.profile.identification}</div>}
               <div className="text-gray-500">
-                {(senderClient.address?.street || "").trim()} {(senderClient.address?.city || "").trim()}{" "}
-                {(senderClient.address?.state || "").trim()} {(senderClient.address?.zipCode || "").trim()}
+                {(senderClient.profile.addressLine || "").trim()} {(senderClient.profile.cityLabel || "").trim()}{" "}
+                {(senderClient.profile.zipCode || "").trim()}
               </div>
             </div>
           )}
@@ -943,7 +1098,7 @@ export default function CreateGuidePage() {
             >
               {(senderClient?.beneficiaries || []).map((b, idx) => (
                 <option key={idx} value={idx}>
-                  #{idx + 1} — {b.name || "No name"} {b.relationship ? `(${b.relationship})` : ""}
+                  #{idx + 1} — {displayPersonName(b)} {b.relationship ? `(${b.relationship})` : ""}
                 </option>
               ))}
             </select>
@@ -951,12 +1106,18 @@ export default function CreateGuidePage() {
 
           {beneficiaryPreview ? (
             <div className="mt-4 text-sm text-gray-700 space-y-1">
-              <div className="font-medium">{beneficiaryPreview.name}</div>
+              <div className="font-medium">{displayPersonName(beneficiaryPreview)}</div>
               {beneficiaryPreview.relationship && <div>{beneficiaryPreview.relationship}</div>}
               {beneficiaryPreview.phone && <div>{beneficiaryPreview.phone}</div>}
+              {beneficiaryPreview.mobile && <div>{beneficiaryPreview.mobile}</div>}
               {beneficiaryPreview.email && <div>{beneficiaryPreview.email}</div>}
               {beneficiaryPreview.identification && <div>ID: {beneficiaryPreview.identification}</div>}
-              {beneficiaryPreview.address && <div className="text-gray-500">{beneficiaryPreview.address}</div>}
+              {(beneficiaryPreview.addressLine || beneficiaryPreview.cityLabel || beneficiaryPreview.zipCode) && (
+                <div className="text-gray-500">
+                  {(beneficiaryPreview.addressLine || "").trim()} {(beneficiaryPreview.cityLabel || "").trim()}{" "}
+                  {(beneficiaryPreview.zipCode || "").trim()}
+                </div>
+              )}
             </div>
           ) : (
             <div className="mt-4 text-sm text-gray-500">Select a sender with beneficiaries.</div>
@@ -984,7 +1145,7 @@ export default function CreateGuidePage() {
           </div>
         </div>
 
-        {/* NEW: Bitácora interna */}
+        {/* Bitácora interna */}
         <div className="mt-4">
           <label className="label">Bitácora interna (comentarios)</label>
           <textarea
@@ -1003,160 +1164,128 @@ export default function CreateGuidePage() {
       </div>
 
       {/* Packages (Invoice) */}
+      {/* Packages */}
       <div className="card p-6">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-gray-900">Paquetes (Invoice) *</h2>
-          <span className="text-sm text-gray-500">{filteredInvoices.length} available invoice(s)</span>
+          <h2 className="text-lg font-semibold text-gray-900">Paquetes *</h2>
+          <span className="text-sm text-gray-500">{packages.length} paquete(s)</span>
         </div>
 
-        <div className="flex items-center gap-2 mb-4">
-          <div className="relative w-full md:w-96">
-            <Search className="h-4 w-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
-            <input
-              value={invoiceSearch}
-              onChange={(e) => setInvoiceSearch(e.target.value)}
-              className="input pl-9"
-              placeholder="Search invoice by number, total, item..."
-              disabled={!senderClientId || loadingInvoices}
-            />
-          </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-gray-500">
+                <th className="py-2">Descripción</th>
+                <th className="py-2">Valor</th>
+                <th className="py-2">L *</th>
+                <th className="py-2">W *</th>
+                <th className="py-2">H *</th>
+                <th className="py-2">Wt *</th>
+                <th className="py-2">Pcs</th>
+                <th className="py-2">Vol *</th>
+                <th className="py-2"></th>
+              </tr>
+            </thead>
 
-          <select
-            className="input md:w-52"
-            value={invoiceMode}
-            onChange={(e) => setInvoiceMode(e.target.value as InvoiceMode)}
-            disabled={!senderClientId || loadingInvoices}
-          >
-            <option value="ECUADOR">Ecuador</option>
-            <option value="COLOMBIA">Colombia</option>
-          </select>
-        </div>
-
-        {!senderClientId ? (
-          <div className="text-sm text-gray-500">Select a sender to load invoices.</div>
-        ) : loadingInvoices ? (
-          <div className="text-sm text-gray-500">Loading invoices...</div>
-        ) : filteredInvoices.length === 0 ? (
-          <div className="text-sm text-gray-500">No available invoices (without guide) for this client.</div>
-        ) : (
-          <>
-            <div className="space-y-2">
-              {paginatedInvoices.map((inv) => {
-                const shownTotal = invoiceMode === "COLOMBIA" ? invoiceLinesTotal(inv) : toNum(inv.total || 0);
-
+            <tbody>
+              {packages.map((p, idx) => {
+                const vol = volumetricWeight(p);
                 return (
-                  <label
-                    key={inv._id}
-                    className={`flex items-start gap-3 border rounded-md p-3 cursor-pointer ${
-                      selectedInvoiceId === inv._id ? "border-blue-500 bg-blue-50" : "border-gray-200"
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="invoice"
-                      checked={selectedInvoiceId === inv._id}
-                      onChange={() => setSelectedInvoiceId(inv._id)}
-                      className="mt-1"
-                    />
-                    <div className="flex-1">
-                      <div className="flex items-center justify-between">
-                        <div className="font-medium text-gray-900">Invoice {inv.invoiceNumber}</div>
-                        <div className="text-sm font-semibold">£{shownTotal.toFixed(2)}</div>
-                      </div>
-                      <div className="text-xs text-gray-500">{new Date(inv.createdAt).toLocaleDateString()}</div>
+                  <tr key={p.id} className="border-t">
+                    <td className="py-2">
+                      <input
+                        className="input"
+                        value={p.description}
+                        onChange={(e) =>
+                          setPackages((prev) => prev.map((x) => (x.id === p.id ? { ...x, description: e.target.value } : x)))
+                        }
+                      />
+                    </td>
 
-                      <div className="text-xs text-gray-600 mt-2">
-                        {invoiceMode === "ECUADOR" ? (
-                          <>
-                            {(inv.items || []).slice(0, 2).map((it, idx) => (
-                              <div key={idx}>
-                                • {it.description} (x{it.quantity})
-                              </div>
-                            ))}
-                            {(inv.items || []).length > 2 && (
-                              <div className="text-gray-400">+ {(inv.items || []).length - 2} more</div>
-                            )}
-                          </>
-                        ) : (
-                          <div className="text-gray-700">{invoiceColombiaParagraph(inv)}</div>
-                        )}
+                    <td className="py-2">
+                      <input
+                        className="input text-right"
+                        type="number"
+                        step="0.01"
+                        value={p.value || ""}
+                        onChange={(e) =>
+                          setPackages((prev) => prev.map((x) => (x.id === p.id ? { ...x, value: toNum(e.target.value) } : x)))
+                        }
+                      />
+                    </td>
+
+                    <td className="py-2">
+                      <input className="input text-right" type="number" step="0.01" value={p.length || ""}
+                        onChange={(e) => setPackages((prev) => prev.map((x) => (x.id === p.id ? { ...x, length: toNum(e.target.value) } : x)))} />
+                    </td>
+
+                    <td className="py-2">
+                      <input className="input text-right" type="number" step="0.01" value={p.width || ""}
+                        onChange={(e) => setPackages((prev) => prev.map((x) => (x.id === p.id ? { ...x, width: toNum(e.target.value) } : x)))} />
+                    </td>
+
+                    <td className="py-2">
+                      <input className="input text-right" type="number" step="0.01" value={p.height || ""}
+                        onChange={(e) => setPackages((prev) => prev.map((x) => (x.id === p.id ? { ...x, height: toNum(e.target.value) } : x)))} />
+                    </td>
+
+                    <td className="py-2">
+                      <input className="input text-right" type="number" step="0.01" value={p.weight || ""}
+                        onChange={(e) => setPackages((prev) => prev.map((x) => (x.id === p.id ? { ...x, weight: toNum(e.target.value) } : x)))} />
+                    </td>
+
+                    <td className="py-2">
+                      <input className="input text-right" type="number" min={1} value={p.pcs || 1}
+                        onChange={(e) => setPackages((prev) => prev.map((x) => (x.id === p.id ? { ...x, pcs: Math.max(1, toNum(e.target.value)) } : x)))} />
+                    </td>
+
+                    <td className="py-2">
+                      <input className="input bg-gray-100 text-right" value={vol.toFixed(2)} readOnly />
+                    </td>
+
+                    <td className="py-2">
+                      <div className="flex items-center gap-2 justify-end">
+                        <button
+                          type="button"
+                          className="px-2 py-1 border rounded"
+                          onClick={() => setPackages((prev) => [...prev, { id: crypto.randomUUID(), description: "", value: 0, length: 0, width: 0, height: 0, weight: 0, pcs: 1 }])}
+                          title="Agregar"
+                        >
+                          +
+                        </button>
+
+                        <button
+                          type="button"
+                          className="px-2 py-1 border rounded text-red-600 disabled:opacity-50"
+                          disabled={packages.length === 1}
+                          onClick={() => setPackages((prev) => prev.filter((x) => x.id !== p.id))}
+                          title="Eliminar"
+                        >
+                          x
+                        </button>
                       </div>
-                    </div>
-                  </label>
+                    </td>
+                  </tr>
                 );
               })}
-            </div>
+            </tbody>
+          </table>
+        </div>
 
-            {/* Pagination */}
-            {filteredInvoices.length > INVOICE_PAGE_SIZE && (
-              <div className="flex items-center justify-between mt-4">
-                <button
-                  type="button"
-                  onClick={() => setInvoicePage((p) => Math.max(1, p - 1))}
-                  disabled={invoicePage === 1}
-                  className="px-3 py-1 text-sm border rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Previous
-                </button>
-                <span className="text-sm text-gray-600">
-                  Page {invoicePage} of {invoiceTotalPages}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setInvoicePage((p) => Math.min(invoiceTotalPages, p + 1))}
-                  disabled={invoicePage === invoiceTotalPages}
-                  className="px-3 py-1 text-sm border rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Next
-                </button>
-              </div>
-            )}
-
-            {/* Preview invoice details */}
-            {selectedInvoice && (
-              <div className="mt-6 border-t pt-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-semibold text-gray-900">Invoice items (detail)</h3>
-                  <div className="text-sm text-gray-600">
-                    Declared value auto: <span className="font-semibold">£{toNum(declaredValue || 0).toFixed(2)}</span>
-                  </div>
-                </div>
-
-                <div className="mt-3 overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="text-left text-gray-500">
-                        <th className="py-2">Description</th>
-                        <th className="py-2">Qty</th>
-                        <th className="py-2">Unit</th>
-                        <th className="py-2">Total</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {invoiceMode === "ECUADOR" ? (
-                        (selectedInvoice.items || []).map((it, idx) => (
-                          <tr key={idx} className="border-t">
-                            <td className="py-2">{it.description}</td>
-                            <td className="py-2">{it.quantity}</td>
-                            <td className="py-2">£{toNum(it.unitPrice || 0).toFixed(2)}</td>
-                            <td className="py-2 font-medium">£{toNum(it.total || 0).toFixed(2)}</td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr className="border-t">
-                          <td className="py-2">{invoiceColombiaParagraph(selectedInvoice)}</td>
-                          <td className="py-2">—</td>
-                          <td className="py-2">—</td>
-                          <td className="py-2 font-medium">£{invoiceLinesTotal(selectedInvoice).toFixed(2)}</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-          </>
-        )}
+        <div className="mt-4 flex flex-wrap gap-6 text-sm justify-end">
+          <div>
+            <span className="text-gray-500">Valor declarado (auto):</span>{" "}
+            <span className="font-semibold">£{packagesDeclaredValue.toFixed(2)}</span>
+          </div>
+          <div>
+            <span className="text-gray-500">Peso real:</span>{" "}
+            <span className="font-semibold">{packagesTotalWeight.toFixed(2)}</span>
+          </div>
+          <div>
+            <span className="text-gray-500">Peso a cobrar:</span>{" "}
+            <span className="font-semibold">{packagesChargeableWeight.toFixed(2)}</span>
+          </div>
+        </div>
       </div>
 
       {/* Tariff */}
@@ -1178,13 +1307,7 @@ export default function CreateGuidePage() {
 
           <div>
             <label className="label">Valor Medida (Peso) *</label>
-            <input
-              type="number"
-              step="0.01"
-              className="input"
-              value={measureValue || ""}
-              onChange={(e) => setMeasureValue(toNum(e.target.value || 0))}
-            />
+            <input type="number" step="0.01" className="input" value={measureValue || ""} onChange={(e) => setMeasureValue(toNum(e.target.value || 0))} />
           </div>
 
           <div>
@@ -1196,35 +1319,17 @@ export default function CreateGuidePage() {
         <div className="grid grid-cols-4 gap-4 mt-4">
           <div>
             <label className="label">Monto Declarado</label>
-            <input
-              type="number"
-              step="0.01"
-              className="input"
-              value={declaredValue || ""}
-              onChange={(e) => setDeclaredValue(toNum(e.target.value || 0))}
-            />
+            <input type="number" step="0.01" className="input" value={declaredValue || ""} onChange={(e) => setDeclaredValue(toNum(e.target.value || 0))} />
           </div>
 
           <div>
             <label className="label">Monto Asegurado</label>
-            <input
-              type="number"
-              step="0.01"
-              className="input"
-              value={insuredAmount || ""}
-              onChange={(e) => setInsuredAmount(toNum(e.target.value || 0))}
-            />
+            <input type="number" step="0.01" className="input" value={insuredAmount || ""} onChange={(e) => setInsuredAmount(toNum(e.target.value || 0))} />
           </div>
 
           <div>
             <label className="label">Seguro</label>
-            <input
-              type="number"
-              step="0.01"
-              className="input"
-              value={insurance || ""}
-              onChange={(e) => setInsurance(toNum(e.target.value || 0))}
-            />
+            <input type="number" step="0.01" className="input" value={insurance || ""} onChange={(e) => setInsurance(toNum(e.target.value || 0))} />
           </div>
 
           <div>
@@ -1234,35 +1339,17 @@ export default function CreateGuidePage() {
 
           <div>
             <label className="label">Descuento</label>
-            <input
-              type="number"
-              step="0.01"
-              className="input"
-              value={discount || ""}
-              onChange={(e) => setDiscount(toNum(e.target.value || 0))}
-            />
+            <input type="number" step="0.01" className="input" value={discount || ""} onChange={(e) => setDiscount(toNum(e.target.value || 0))} />
           </div>
 
           <div>
             <label className="label">Comisión</label>
-            <input
-              type="number"
-              step="0.01"
-              className="input"
-              value={commission || ""}
-              onChange={(e) => setCommission(toNum(e.target.value || 0))}
-            />
+            <input type="number" step="0.01" className="input" value={commission || ""} onChange={(e) => setCommission(toNum(e.target.value || 0))} />
           </div>
 
           <div>
             <label className="label">Otros Cargos</label>
-            <input
-              type="number"
-              step="0.01"
-              className="input"
-              value={otherCharges || ""}
-              onChange={(e) => setOtherCharges(toNum(e.target.value || 0))}
-            />
+            <input type="number" step="0.01" className="input" value={otherCharges || ""} onChange={(e) => setOtherCharges(toNum(e.target.value || 0))} />
           </div>
 
           <div className="border rounded-md p-3 bg-gray-50">
@@ -1404,102 +1491,178 @@ export default function CreateGuidePage() {
             <h3 className="text-lg font-medium text-gray-900 mb-4">Client Information</h3>
 
             <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="label">Full Name *</label>
-                <input className="input" value={clientForm.name} onChange={(e) => updateClientField("name", e.target.value)} required />
+              <div className="col-span-2">
+                <label className="label">Entity type</label>
+                <select className="input" value={clientForm.profile.entityType} onChange={(e) => updateClientProfile({ entityType: e.target.value as EntityType })}>
+                  <option value="PERSON">Person</option>
+                  <option value="COMPANY">Company</option>
+                </select>
               </div>
-              <div>
-                <label className="label">Email *</label>
-                <input type="email" className="input" value={clientForm.email} onChange={(e) => updateClientField("email", e.target.value)} required />
-              </div>
-              <div>
-                <label className="label">Phone *</label>
-                <input className="input" value={clientForm.phone} onChange={(e) => updateClientField("phone", e.target.value)} required />
-              </div>
-              <div>
-                <label className="label">Identification *</label>
-                <input className="input" value={clientForm.identification} onChange={(e) => updateClientField("identification", e.target.value)} required />
-              </div>
-            </div>
 
-            <div className="grid grid-cols-2 gap-4 mt-4">
+              {clientForm.profile.entityType === "PERSON" ? (
+                <>
+                  <div>
+                    <label className="label">First name *</label>
+                    <input className="input" value={clientForm.profile.firstName || ""} onChange={(e) => updateClientProfile({ firstName: e.target.value })} />
+                  </div>
+                  <div>
+                    <label className="label">Last name *</label>
+                    <input className="input" value={clientForm.profile.lastName || ""} onChange={(e) => updateClientProfile({ lastName: e.target.value })} />
+                  </div>
+                </>
+              ) : (
+                <div className="col-span-2">
+                  <label className="label">Company name *</label>
+                  <input className="input" value={clientForm.profile.companyName || ""} onChange={(e) => updateClientProfile({ companyName: e.target.value })} />
+                </div>
+              )}
+
               <div>
-                <label className="label">Street</label>
-                <input className="input" value={clientForm.address.street} onChange={(e) => updateClientField("address.street", e.target.value)} />
+                <label className="label">Email</label>
+                <input type="email" className="input" value={clientForm.profile.email || ""} onChange={(e) => updateClientProfile({ email: e.target.value })} />
               </div>
+              <div>
+                <label className="label">Identification</label>
+                <input className="input" value={clientForm.profile.identification || ""} onChange={(e) => updateClientProfile({ identification: e.target.value })} />
+              </div>
+
+              <div>
+                <label className="label">Phone</label>
+                <input className="input" value={clientForm.profile.phone || ""} onChange={(e) => updateClientProfile({ phone: e.target.value })} />
+              </div>
+              <div>
+                <label className="label">Mobile</label>
+                <input className="input" value={clientForm.profile.mobile || ""} onChange={(e) => updateClientProfile({ mobile: e.target.value })} />
+              </div>
+
+              <div className="col-span-2">
+                <label className="label">Address *</label>
+                <textarea className="input min-h-[90px]" value={clientForm.profile.addressLine || ""} onChange={(e) => updateClientProfile({ addressLine: e.target.value })} />
+              </div>
+
               <div>
                 <label className="label">City</label>
-                <input className="input" value={clientForm.address.city} onChange={(e) => updateClientField("address.city", e.target.value)} />
+                <select
+                  className="input"
+                  value={clientForm.profile.cityId || ""}
+                  disabled={loadingCities}
+                  onChange={(e) => {
+                    const cityId = e.target.value;
+                    setClientForm((p) => ({ ...p, profile: applyCitySelection(p.profile, cityId) }));
+                  }}
+                >
+                  <option value="">Choose...</option>
+                  {cities.map((c) => (
+                    <option key={c._id} value={c._id}>
+                      {c.label}
+                    </option>
+                  ))}
+                </select>
               </div>
-              <div>
-                <label className="label">State</label>
-                <input className="input" value={clientForm.address.state} onChange={(e) => updateClientField("address.state", e.target.value)} />
-              </div>
+
               <div>
                 <label className="label">ZIP Code</label>
-                <input className="input" value={clientForm.address.zipCode} onChange={(e) => updateClientField("address.zipCode", e.target.value)} />
+                <input className="input" value={clientForm.profile.zipCode || ""} onChange={(e) => updateClientProfile({ zipCode: e.target.value })} />
               </div>
             </div>
           </div>
 
-          {/* Beneficiaries */}
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-lg font-medium text-gray-900">Beneficiaries</h3>
-              <button type="button" className="btn-outline text-sm flex items-center" onClick={addBeneficiary}>
-                <Plus className="h-4 w-4 mr-1" />
-                Add Beneficiary
-              </button>
-            </div>
-
-            <div className="space-y-3">
-              {clientForm.beneficiaries.map((b, idx) => (
-                <div key={idx} className="border border-gray-200 rounded-lg p-4 bg-gray-50">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="text-sm font-semibold">Beneficiary #{idx + 1}</div>
-
-                    {clientForm.beneficiaries.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={() => removeBeneficiary(idx)}
-                        className="flex items-center text-xs text-red-600 hover:underline"
-                      >
-                        <Trash2 className="h-3 w-3 mr-1" />
-                        Remove
-                      </button>
-                    )}
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="label">Name *</label>
-                      <input className="input" value={b.name || ""} onChange={(e) => updateBeneficiaryField(idx, "name", e.target.value)} required={idx === 0} />
-                    </div>
-                    <div>
-                      <label className="label">Relationship</label>
-                      <input className="input" value={b.relationship || ""} onChange={(e) => updateBeneficiaryField(idx, "relationship", e.target.value)} />
-                    </div>
-                    <div>
-                      <label className="label">Phone</label>
-                      <input className="input" value={b.phone || ""} onChange={(e) => updateBeneficiaryField(idx, "phone", e.target.value)} />
-                    </div>
-                    <div>
-                      <label className="label">Email</label>
-                      <input type="email" className="input" value={b.email || ""} onChange={(e) => updateBeneficiaryField(idx, "email", e.target.value)} />
-                    </div>
-                    <div className="col-span-2">
-                      <label className="label">Identification</label>
-                      <input className="input" value={b.identification || ""} onChange={(e) => updateBeneficiaryField(idx, "identification", e.target.value)} />
-                    </div>
-                    <div className="col-span-2">
-                      <label className="label">Address</label>
-                      <input className="input" value={b.address || ""} onChange={(e) => updateBeneficiaryField(idx, "address", e.target.value)} />
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
+          {/* Checkbox */}
+          <div className="flex items-center gap-2">
+            <input id="addBeneficiaryNow" type="checkbox" checked={addBeneficiaryNow} onChange={(e) => setAddBeneficiaryNow(e.target.checked)} />
+            <label htmlFor="addBeneficiaryNow" className="text-sm text-gray-700">
+              Add beneficiary now
+            </label>
           </div>
+
+          {addBeneficiaryNow && (
+            <div className="border rounded-lg p-4 bg-gray-50">
+              <h3 className="text-lg font-medium text-gray-900 mb-4">Beneficiary</h3>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="col-span-2">
+                  <label className="label">Entity type</label>
+                  <select className="input" value={clientForm.beneficiary.entityType} onChange={(e) => updateClientBeneficiary({ entityType: e.target.value as EntityType })}>
+                    <option value="PERSON">Person</option>
+                    <option value="COMPANY">Company</option>
+                  </select>
+                </div>
+
+                {clientForm.beneficiary.entityType === "PERSON" ? (
+                  <>
+                    <div>
+                      <label className="label">First name *</label>
+                      <input className="input" value={clientForm.beneficiary.firstName || ""} onChange={(e) => updateClientBeneficiary({ firstName: e.target.value })} />
+                    </div>
+                    <div>
+                      <label className="label">Last name *</label>
+                      <input className="input" value={clientForm.beneficiary.lastName || ""} onChange={(e) => updateClientBeneficiary({ lastName: e.target.value })} />
+                    </div>
+                  </>
+                ) : (
+                  <div className="col-span-2">
+                    <label className="label">Company name *</label>
+                    <input className="input" value={clientForm.beneficiary.companyName || ""} onChange={(e) => updateClientBeneficiary({ companyName: e.target.value })} />
+                  </div>
+                )}
+
+                <div>
+                  <label className="label">Relationship</label>
+                  <input className="input" value={clientForm.beneficiary.relationship || ""} onChange={(e) => updateClientBeneficiary({ relationship: e.target.value })} />
+                </div>
+
+                <div>
+                  <label className="label">Email</label>
+                  <input type="email" className="input" value={clientForm.beneficiary.email || ""} onChange={(e) => updateClientBeneficiary({ email: e.target.value })} />
+                </div>
+
+                <div>
+                  <label className="label">Phone</label>
+                  <input className="input" value={clientForm.beneficiary.phone || ""} onChange={(e) => updateClientBeneficiary({ phone: e.target.value })} />
+                </div>
+
+                <div>
+                  <label className="label">Mobile</label>
+                  <input className="input" value={clientForm.beneficiary.mobile || ""} onChange={(e) => updateClientBeneficiary({ mobile: e.target.value })} />
+                </div>
+
+                <div className="col-span-2">
+                  <label className="label">Identification</label>
+                  <input className="input" value={clientForm.beneficiary.identification || ""} onChange={(e) => updateClientBeneficiary({ identification: e.target.value })} />
+                </div>
+
+                <div className="col-span-2">
+                  <label className="label">Address *</label>
+                  <textarea className="input min-h-[90px]" value={clientForm.beneficiary.addressLine || ""} onChange={(e) => updateClientBeneficiary({ addressLine: e.target.value })} />
+                </div>
+
+                <div>
+                  <label className="label">City</label>
+                  <select
+                    className="input"
+                    value={clientForm.beneficiary.cityId || ""}
+                    disabled={loadingCities}
+                    onChange={(e) => {
+                      const cityId = e.target.value;
+                      setClientForm((p) => ({ ...p, beneficiary: applyCitySelection(p.beneficiary, cityId) }));
+                    }}
+                  >
+                    <option value="">Choose...</option>
+                    {cities.map((c) => (
+                      <option key={c._id} value={c._id}>
+                        {c.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="label">ZIP Code</label>
+                  <input className="input" value={clientForm.beneficiary.zipCode || ""} onChange={(e) => updateClientBeneficiary({ zipCode: e.target.value })} />
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="flex justify-end space-x-3 pt-4 border-t border-gray-200">
             <button type="button" onClick={() => setShowCreateClientModal(false)} className="btn-outline">
@@ -1519,44 +1682,84 @@ export default function CreateGuidePage() {
             <h3 className="text-lg font-medium text-gray-900 mb-4">Client Information</h3>
 
             <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="label">Full Name *</label>
-                <input className="input" value={editClientForm.name} onChange={(e) => updateEditClientField("name", e.target.value)} required />
+              <div className="col-span-2">
+                <label className="label">Entity type</label>
+                <select className="input" value={editClientForm.profile.entityType} onChange={(e) => updateEditClientProfile({ entityType: e.target.value as EntityType })}>
+                  <option value="PERSON">Person</option>
+                  <option value="COMPANY">Company</option>
+                </select>
               </div>
+
+              {editClientForm.profile.entityType === "PERSON" ? (
+                <>
+                  <div>
+                    <label className="label">First name *</label>
+                    <input className="input" value={editClientForm.profile.firstName || ""} onChange={(e) => updateEditClientProfile({ firstName: e.target.value })} />
+                  </div>
+                  <div>
+                    <label className="label">Last name *</label>
+                    <input className="input" value={editClientForm.profile.lastName || ""} onChange={(e) => updateEditClientProfile({ lastName: e.target.value })} />
+                  </div>
+                </>
+              ) : (
+                <div className="col-span-2">
+                  <label className="label">Company name *</label>
+                  <input className="input" value={editClientForm.profile.companyName || ""} onChange={(e) => updateEditClientProfile({ companyName: e.target.value })} />
+                </div>
+              )}
+
               <div>
-                <label className="label">Email *</label>
-                <input type="email" className="input" value={editClientForm.email} onChange={(e) => updateEditClientField("email", e.target.value)} required />
-              </div>
-              <div>
-                <label className="label">Phone *</label>
-                <input className="input" value={editClientForm.phone} onChange={(e) => updateEditClientField("phone", e.target.value)} required />
+                <label className="label">Email</label>
+                <input type="email" className="input" value={editClientForm.profile.email || ""} onChange={(e) => updateEditClientProfile({ email: e.target.value })} />
               </div>
               <div>
                 <label className="label">Identification</label>
-                <input className="input" value={editClientForm.identification} onChange={(e) => updateEditClientField("identification", e.target.value)} />
+                <input className="input" value={editClientForm.profile.identification || ""} onChange={(e) => updateEditClientProfile({ identification: e.target.value })} />
               </div>
-            </div>
 
-            <div className="grid grid-cols-2 gap-4 mt-4">
               <div>
-                <label className="label">Street</label>
-                <input className="input" value={editClientForm.address.street} onChange={(e) => updateEditClientField("address.street", e.target.value)} />
+                <label className="label">Phone</label>
+                <input className="input" value={editClientForm.profile.phone || ""} onChange={(e) => updateEditClientProfile({ phone: e.target.value })} />
               </div>
+              <div>
+                <label className="label">Mobile</label>
+                <input className="input" value={editClientForm.profile.mobile || ""} onChange={(e) => updateEditClientProfile({ mobile: e.target.value })} />
+              </div>
+
+              <div className="col-span-2">
+                <label className="label">Address *</label>
+                <textarea className="input min-h-[90px]" value={editClientForm.profile.addressLine || ""} onChange={(e) => updateEditClientProfile({ addressLine: e.target.value })} />
+              </div>
+
               <div>
                 <label className="label">City</label>
-                <input className="input" value={editClientForm.address.city} onChange={(e) => updateEditClientField("address.city", e.target.value)} />
+                <select
+                  className="input"
+                  value={editClientForm.profile.cityId || ""}
+                  disabled={loadingCities}
+                  onChange={(e) => {
+                    const cityId = e.target.value;
+                    setEditClientForm((p) => ({ ...p, profile: applyCitySelection(p.profile, cityId) }));
+                  }}
+                >
+                  <option value="">Choose...</option>
+                  {cities.map((c) => (
+                    <option key={c._id} value={c._id}>
+                      {c.label}
+                    </option>
+                  ))}
+                </select>
               </div>
-              <div>
-                <label className="label">State</label>
-                <input className="input" value={editClientForm.address.state} onChange={(e) => updateEditClientField("address.state", e.target.value)} />
-              </div>
+
               <div>
                 <label className="label">ZIP Code</label>
-                <input className="input" value={editClientForm.address.zipCode} onChange={(e) => updateEditClientField("address.zipCode", e.target.value)} />
+                <input className="input" value={editClientForm.profile.zipCode || ""} onChange={(e) => updateEditClientProfile({ zipCode: e.target.value })} />
+              </div>
+
+              <div className="mt-3 text-xs text-gray-500 col-span-2">
+                * Nota: Los beneficiarios no se editan aquí. Para editar un beneficiario usa “Edit beneficiary”.
               </div>
             </div>
-
-            <div className="mt-3 text-xs text-gray-500">* Nota: Los beneficiarios no se editan aquí. Para editar un beneficiario usa “Edit beneficiary”.</div>
           </div>
 
           <div className="flex justify-end space-x-3 pt-4 border-t border-gray-200">
@@ -1574,14 +1777,40 @@ export default function CreateGuidePage() {
       <Modal isOpen={showAddBeneficiaryModal} onClose={() => setShowAddBeneficiaryModal(false)} title="Add Beneficiary" size="large">
         <form onSubmit={handleAddBeneficiaryToSender} className="space-y-6">
           <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="label">Name *</label>
-              <input className="input" value={beneficiaryForm.name || ""} onChange={(e) => setBeneficiaryForm((p) => ({ ...p, name: e.target.value }))} required />
+            <div className="col-span-2">
+              <label className="label">Entity type</label>
+              <select className="input" value={beneficiaryForm.entityType} onChange={(e) => setBeneficiaryForm((p) => ({ ...p, entityType: e.target.value as EntityType }))}>
+                <option value="PERSON">Person</option>
+                <option value="COMPANY">Company</option>
+              </select>
             </div>
+
+            {beneficiaryForm.entityType === "PERSON" ? (
+              <>
+                <div>
+                  <label className="label">First name *</label>
+                  <input className="input" value={beneficiaryForm.firstName || ""} onChange={(e) => setBeneficiaryForm((p) => ({ ...p, firstName: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="label">Last name *</label>
+                  <input className="input" value={beneficiaryForm.lastName || ""} onChange={(e) => setBeneficiaryForm((p) => ({ ...p, lastName: e.target.value }))} />
+                </div>
+              </>
+            ) : (
+              <div className="col-span-2">
+                <label className="label">Company name *</label>
+                <input className="input" value={beneficiaryForm.companyName || ""} onChange={(e) => setBeneficiaryForm((p) => ({ ...p, companyName: e.target.value }))} />
+              </div>
+            )}
 
             <div>
               <label className="label">Relationship</label>
               <input className="input" value={beneficiaryForm.relationship || ""} onChange={(e) => setBeneficiaryForm((p) => ({ ...p, relationship: e.target.value }))} />
+            </div>
+
+            <div>
+              <label className="label">Email</label>
+              <input type="email" className="input" value={beneficiaryForm.email || ""} onChange={(e) => setBeneficiaryForm((p) => ({ ...p, email: e.target.value }))} />
             </div>
 
             <div>
@@ -1590,8 +1819,8 @@ export default function CreateGuidePage() {
             </div>
 
             <div>
-              <label className="label">Email</label>
-              <input type="email" className="input" value={beneficiaryForm.email || ""} onChange={(e) => setBeneficiaryForm((p) => ({ ...p, email: e.target.value }))} />
+              <label className="label">Mobile</label>
+              <input className="input" value={beneficiaryForm.mobile || ""} onChange={(e) => setBeneficiaryForm((p) => ({ ...p, mobile: e.target.value }))} />
             </div>
 
             <div className="col-span-2">
@@ -1600,8 +1829,33 @@ export default function CreateGuidePage() {
             </div>
 
             <div className="col-span-2">
-              <label className="label">Address</label>
-              <input className="input" value={beneficiaryForm.address || ""} onChange={(e) => setBeneficiaryForm((p) => ({ ...p, address: e.target.value }))} />
+              <label className="label">Address *</label>
+              <textarea className="input min-h-[90px]" value={beneficiaryForm.addressLine || ""} onChange={(e) => setBeneficiaryForm((p) => ({ ...p, addressLine: e.target.value }))} />
+            </div>
+
+            <div>
+              <label className="label">City</label>
+              <select
+                className="input"
+                value={beneficiaryForm.cityId || ""}
+                disabled={loadingCities}
+                onChange={(e) => {
+                  const cityId = e.target.value;
+                  setBeneficiaryForm((p) => applyCitySelection(p, cityId));
+                }}
+              >
+                <option value="">Choose...</option>
+                {cities.map((c) => (
+                  <option key={c._id} value={c._id}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="label">ZIP Code</label>
+              <input className="input" value={beneficiaryForm.zipCode || ""} onChange={(e) => setBeneficiaryForm((p) => ({ ...p, zipCode: e.target.value }))} />
             </div>
           </div>
 
@@ -1620,18 +1874,40 @@ export default function CreateGuidePage() {
       <Modal isOpen={showEditBeneficiaryModal} onClose={() => setShowEditBeneficiaryModal(false)} title="Edit Beneficiary" size="large">
         <form onSubmit={handleUpdateBeneficiary} className="space-y-6">
           <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="label">Name *</label>
-              <input className="input" value={editBeneficiaryForm.name || ""} onChange={(e) => setEditBeneficiaryForm((p) => ({ ...p, name: e.target.value }))} required />
+            <div className="col-span-2">
+              <label className="label">Entity type</label>
+              <select className="input" value={editBeneficiaryForm.entityType} onChange={(e) => setEditBeneficiaryForm((p) => ({ ...p, entityType: e.target.value as EntityType }))}>
+                <option value="PERSON">Person</option>
+                <option value="COMPANY">Company</option>
+              </select>
             </div>
+
+            {editBeneficiaryForm.entityType === "PERSON" ? (
+              <>
+                <div>
+                  <label className="label">First name *</label>
+                  <input className="input" value={editBeneficiaryForm.firstName || ""} onChange={(e) => setEditBeneficiaryForm((p) => ({ ...p, firstName: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="label">Last name *</label>
+                  <input className="input" value={editBeneficiaryForm.lastName || ""} onChange={(e) => setEditBeneficiaryForm((p) => ({ ...p, lastName: e.target.value }))} />
+                </div>
+              </>
+            ) : (
+              <div className="col-span-2">
+                <label className="label">Company name *</label>
+                <input className="input" value={editBeneficiaryForm.companyName || ""} onChange={(e) => setEditBeneficiaryForm((p) => ({ ...p, companyName: e.target.value }))} />
+              </div>
+            )}
 
             <div>
               <label className="label">Relationship</label>
-              <input
-                className="input"
-                value={editBeneficiaryForm.relationship || ""}
-                onChange={(e) => setEditBeneficiaryForm((p) => ({ ...p, relationship: e.target.value }))}
-              />
+              <input className="input" value={editBeneficiaryForm.relationship || ""} onChange={(e) => setEditBeneficiaryForm((p) => ({ ...p, relationship: e.target.value }))} />
+            </div>
+
+            <div>
+              <label className="label">Email</label>
+              <input type="email" className="input" value={editBeneficiaryForm.email || ""} onChange={(e) => setEditBeneficiaryForm((p) => ({ ...p, email: e.target.value }))} />
             </div>
 
             <div>
@@ -1640,22 +1916,43 @@ export default function CreateGuidePage() {
             </div>
 
             <div>
-              <label className="label">Email</label>
-              <input type="email" className="input" value={editBeneficiaryForm.email || ""} onChange={(e) => setEditBeneficiaryForm((p) => ({ ...p, email: e.target.value }))} />
+              <label className="label">Mobile</label>
+              <input className="input" value={editBeneficiaryForm.mobile || ""} onChange={(e) => setEditBeneficiaryForm((p) => ({ ...p, mobile: e.target.value }))} />
             </div>
 
             <div className="col-span-2">
               <label className="label">Identification</label>
-              <input
-                className="input"
-                value={editBeneficiaryForm.identification || ""}
-                onChange={(e) => setEditBeneficiaryForm((p) => ({ ...p, identification: e.target.value }))}
-              />
+              <input className="input" value={editBeneficiaryForm.identification || ""} onChange={(e) => setEditBeneficiaryForm((p) => ({ ...p, identification: e.target.value }))} />
             </div>
 
             <div className="col-span-2">
-              <label className="label">Address</label>
-              <input className="input" value={editBeneficiaryForm.address || ""} onChange={(e) => setEditBeneficiaryForm((p) => ({ ...p, address: e.target.value }))} />
+              <label className="label">Address *</label>
+              <textarea className="input min-h-[90px]" value={editBeneficiaryForm.addressLine || ""} onChange={(e) => setEditBeneficiaryForm((p) => ({ ...p, addressLine: e.target.value }))} />
+            </div>
+
+            <div>
+              <label className="label">City</label>
+              <select
+                className="input"
+                value={editBeneficiaryForm.cityId || ""}
+                disabled={loadingCities}
+                onChange={(e) => {
+                  const cityId = e.target.value;
+                  setEditBeneficiaryForm((p) => applyCitySelection(p, cityId));
+                }}
+              >
+                <option value="">Choose...</option>
+                {cities.map((c) => (
+                  <option key={c._id} value={c._id}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="label">ZIP Code</label>
+              <input className="input" value={editBeneficiaryForm.zipCode || ""} onChange={(e) => setEditBeneficiaryForm((p) => ({ ...p, zipCode: e.target.value }))} />
             </div>
           </div>
 

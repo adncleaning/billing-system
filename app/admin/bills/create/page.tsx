@@ -6,11 +6,68 @@ import { useRouter } from "next/navigation";
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000/v1/api";
 
 /** -------------------- Types -------------------- */
-type ClientLite = {
-  _id: string;
-  name: string;
+type ClientAddress = {
+  street?: string;
+  city?: string;
+  state?: string;
+  zipCode?: string;
+};
+
+type SenderClientProfile = {
+  entityType?: "PERSON" | "COMPANY" | string;
+  firstName?: string;
+  lastName?: string;
+  companyName?: string;
+  identification?: string;
   email?: string;
   phone?: string;
+  mobile?: string;
+  addressLine?: string;
+  cityId?: any;
+  cityLabel?: string | null;
+  zipCode?: string | null;
+};
+
+type Beneficiary = {
+  entityType?: "PERSON" | "COMPANY" | string;
+
+  // estructura nueva
+  firstName?: string | null;
+  lastName?: string | null;
+  companyName?: string | null;
+  identification?: string;
+  email?: string;
+  phone?: string;
+  mobile?: string | null;
+  addressLine?: string | null;
+  cityId?: any;
+  cityLabel?: string | null;
+  zipCode?: string | null;
+
+  // estructura vieja
+  _id?: string;
+  name?: string;
+  relationship?: string;
+  address?: string;
+};
+
+type ClientLite = {
+  _id: string;
+
+  // estructura vieja
+  name?: string;
+  email?: string;
+  phone?: string;
+  identification?: string;
+  address?: ClientAddress;
+
+  // estructura nueva
+  profile?: SenderClientProfile;
+
+  // ambos
+  beneficiaries?: Beneficiary[];
+  agency?: string;
+  isActive?: boolean;
 };
 
 type ServiceCatalogItem = {
@@ -18,14 +75,14 @@ type ServiceCatalogItem = {
   name: string;
   price: number;
   description?: string;
-  measure?: string; // Unit
+  measure?: string;
   modifiable?: boolean;
-  onTotal?: boolean; // "Sobre Total"
+  onTotal?: boolean;
 };
 
 type BillServiceLine = {
-  _id?: string; // si viene del catálogo
-  tempId: string; // local
+  _id?: string;
+  tempId: string;
   name: string;
   description?: string;
   measure: string;
@@ -38,7 +95,19 @@ type BillServiceLine = {
 type GuideLite = {
   _id: string;
   number: string;
+
+  // variantes de beneficiario en guía
   recipientName?: string;
+  recipientSecondary?: string;
+  recipientIndex?: number;
+  recipient?: {
+    index?: number;
+    name?: string;
+    identification?: string;
+    email?: string;
+    phone?: string;
+  };
+
   destination?: string;
   weightKg?: number;
   pieces?: number;
@@ -46,10 +115,10 @@ type GuideLite = {
   amount?: number;
   guideTotal?: number;
   createdAt?: string;
+
   invoiceId?: string;
   invoice?: { _id: string };
 };
-
 
 type BillItemLine = {
   tempId: string;
@@ -115,7 +184,7 @@ async function apiFetch(path: string, options: RequestInit = {}, router?: any) {
       try {
         localStorage.removeItem("token");
         localStorage.removeItem("user");
-      } catch { }
+      } catch {}
       router.push("/");
     }
 
@@ -123,7 +192,7 @@ async function apiFetch(path: string, options: RequestInit = {}, router?: any) {
     try {
       const err = await res.json();
       msg = err?.message || msg;
-    } catch { }
+    } catch {}
     throw new Error(msg);
   }
 
@@ -140,6 +209,129 @@ function money(n: number) {
 
 function getGuideAmount(g: GuideLite) {
   return Number((g.amount ?? g.guideTotal) || 0);
+}
+
+/** -------------------- Client Helpers -------------------- */
+function getClientDisplayName(c?: ClientLite | null) {
+  if (!c) return "—";
+
+  const legacy = String(c.name || "").trim();
+  if (legacy) return legacy;
+
+  const p = c.profile;
+  if (p) {
+    if (String(p.entityType || "").toUpperCase() === "COMPANY") {
+      const cn = String(p.companyName || "").trim();
+      if (cn) return cn;
+    }
+
+    const full = `${p.firstName || ""} ${p.lastName || ""}`.trim();
+    if (full) return full;
+  }
+
+  return "—";
+}
+
+function getClientSecondary(c?: ClientLite | null) {
+  if (!c) return "—";
+
+  const s1 =
+    String(c.identification || "").trim() ||
+    String(c.email || "").trim() ||
+    String(c.phone || "").trim();
+  if (s1) return s1;
+
+  const p = c.profile;
+  const s2 =
+    String(p?.identification || "").trim() ||
+    String(p?.email || "").trim() ||
+    String(p?.phone || "").trim() ||
+    String(p?.mobile || "").trim();
+
+  return s2 || "—";
+}
+
+/** -------------------- Beneficiary Helpers -------------------- */
+function getBeneficiaryByGuideIndex(
+  g?: GuideLite | null,
+  selectedClient?: ClientLite | null
+): Beneficiary | null {
+  if (!g || !selectedClient) return null;
+
+  const idxRaw = g.recipientIndex ?? g.recipient?.index;
+  const idx = Number(idxRaw);
+
+  if (!Number.isFinite(idx) || idx < 0) return null;
+
+  const bens = selectedClient.beneficiaries;
+  if (!Array.isArray(bens) || !bens[idx]) return null;
+
+  return bens[idx];
+}
+
+function getBeneficiaryDisplayName(b?: Beneficiary | null) {
+  if (!b) return "—";
+
+  const legacyName = String(b.name || "").trim();
+  if (legacyName) return legacyName;
+
+  if (String(b.entityType || "").toUpperCase() === "COMPANY") {
+    const company = String(b.companyName || "").trim();
+    if (company) return company;
+  }
+
+  const full = `${b.firstName || ""} ${b.lastName || ""}`.trim();
+  if (full) return full;
+
+  const fallbackCompany = String(b.companyName || "").trim();
+  if (fallbackCompany) return fallbackCompany;
+
+  return "—";
+}
+
+function getBeneficiarySecondaryValue(b?: Beneficiary | null) {
+  if (!b) return "—";
+
+  return (
+    String(b.identification || "").trim() ||
+    String(b.email || "").trim() ||
+    String(b.phone || "").trim() ||
+    String(b.mobile || "").trim() ||
+    "—"
+  );
+}
+
+/**
+ * Regla:
+ * 1) recipientName / recipient.name de la guía
+ * 2) beneficiary por index contra selectedClient.beneficiaries
+ * 3) fallback "—"
+ */
+function getBeneficiaryDisplayFromGuide(g: GuideLite, selectedClient: ClientLite | null) {
+  const fromGuide = String(g.recipientName || g.recipient?.name || "").trim();
+  if (fromGuide) return fromGuide;
+
+  const beneficiary = getBeneficiaryByGuideIndex(g, selectedClient);
+  return getBeneficiaryDisplayName(beneficiary);
+}
+
+/**
+ * Regla:
+ * 1) recipientSecondary / recipient.identification / email / phone
+ * 2) beneficiary por index contra selectedClient.beneficiaries
+ * 3) fallback "—"
+ */
+function getBeneficiarySecondaryFromGuide(g: GuideLite, selectedClient: ClientLite | null) {
+  const fromGuide =
+    String(g.recipientSecondary || "").trim() ||
+    String(g.recipient?.identification || "").trim() ||
+    String(g.recipient?.email || "").trim() ||
+    String(g.recipient?.phone || "").trim();
+
+  if (fromGuide) return fromGuide;
+
+  const beneficiary = getBeneficiaryByGuideIndex(g, selectedClient);
+  return getBeneficiarySecondaryValue(beneficiary);
 }
 
 /** -------------------- Simple Modal -------------------- */
@@ -193,12 +385,8 @@ export default function BillsCreatePage() {
 
   /** Bill header */
   const [billNumber, setBillNumber] = useState("");
-  const [issueDate, setIssueDate] = useState(() =>
-    new Date().toISOString().slice(0, 10)
-  );
-  const [dueDate, setDueDate] = useState(() =>
-    new Date().toISOString().slice(0, 10)
-  );
+  const [issueDate, setIssueDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [dueDate, setDueDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [notes, setNotes] = useState("");
 
   /** Included lines */
@@ -230,7 +418,7 @@ export default function BillsCreatePage() {
   const [loadingGuides, setLoadingGuides] = useState(false);
   const [selectedGuideIds, setSelectedGuideIds] = useState<string[]>([]);
 
-  /** Manual Service (parte libre) */
+  /** Manual Service */
   const [manualService, setManualService] = useState({
     name: "",
     description: "",
@@ -253,23 +441,20 @@ export default function BillsCreatePage() {
   const [creating, setCreating] = useState(false);
 
   /** -------------------- Totals -------------------- */
-  const guidesSubtotal = useMemo(() => {
-    return guides.reduce((acc, g) => acc + getGuideAmount(g), 0);
-  }, [guides]);
+  const guidesSubtotal = useMemo(
+    () => guides.reduce((acc, g) => acc + getGuideAmount(g), 0),
+    [guides]
+  );
 
-  const servicesSubtotal = useMemo(() => {
-    return services.reduce(
-      (acc, s) => acc + Number(s.price) * Number(s.quantity),
-      0
-    );
-  }, [services]);
+  const servicesSubtotal = useMemo(
+    () => services.reduce((acc, s) => acc + Number(s.price) * Number(s.quantity), 0),
+    [services]
+  );
 
-  const itemsSubtotal = useMemo(() => {
-    return items.reduce(
-      (acc, it) => acc + Number(it.unitPrice) * Number(it.quantity),
-      0
-    );
-  }, [items]);
+  const itemsSubtotal = useMemo(
+    () => items.reduce((acc, it) => acc + Number(it.unitPrice) * Number(it.quantity), 0),
+    [items]
+  );
 
   const grandTotal = useMemo(
     () => guidesSubtotal + servicesSubtotal + itemsSubtotal,
@@ -281,9 +466,11 @@ export default function BillsCreatePage() {
     setLoadingClients(true);
     try {
       const data = await apiFetch(`/clients?q=${encodeURIComponent(q)}`, {}, router);
-      setClients(data?.data || data?.clients || []);
+      const list = (data?.data || data?.clients || []) as ClientLite[];
+      setClients(Array.isArray(list) ? list : []);
     } catch (e: any) {
       setError(e?.message || "Error cargando clientes");
+      setClients([]);
     } finally {
       setLoadingClients(false);
     }
@@ -297,7 +484,8 @@ export default function BillsCreatePage() {
         {},
         router
       );
-      setUnbilledGuides(data?.data || data?.guides || []);
+      const list = (data?.data || data?.guides || []) as GuideLite[];
+      setUnbilledGuides(Array.isArray(list) ? list : []);
     } catch (e: any) {
       setError(e?.message || "Error cargando guías");
       setUnbilledGuides([]);
@@ -318,7 +506,6 @@ export default function BillsCreatePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientQ]);
 
-  // ✅ si cambia el cliente, limpia selección + listas (evita mezclar guías de otros clientes)
   useEffect(() => {
     setSelectedGuideIds([]);
     setUnbilledGuides([]);
@@ -407,6 +594,7 @@ export default function BillsCreatePage() {
       setError("El servicio manual requiere un nombre.");
       return;
     }
+
     setServices((prev) => [
       ...prev,
       {
@@ -420,6 +608,7 @@ export default function BillsCreatePage() {
         onTotal: !!manualService.onTotal,
       },
     ]);
+
     setManualService({
       name: "",
       description: "",
@@ -440,10 +629,8 @@ export default function BillsCreatePage() {
   function includeSelectedGuides() {
     const selected = unbilledGuides.filter((g) => selectedGuideIds.includes(g._id));
 
-    // ✅ Detect invoiceId de la primer guía seleccionada
     const firstInvoiceId = selected?.[0]?.invoiceId || selected?.[0]?.invoice?._id || null;
 
-    // ✅ Si las guías traen invoiceId, validamos consistencia
     if (selected.length) {
       const invoiceIds = selected
         .map((g) => g.invoiceId || g.invoice?._id || null)
@@ -451,18 +638,18 @@ export default function BillsCreatePage() {
 
       const unique = Array.from(new Set(invoiceIds));
 
-      // Si hay más de una invoice, no permitimos mezclar (o decides tú la regla)
       if (unique.length > 1) {
-        setError("Las guías seleccionadas pertenecen a más de una factura (invoice). Selecciona guías de una sola factura.");
+        setError(
+          "Las guías seleccionadas pertenecen a más de una factura (invoice). Selecciona guías de una sola factura."
+        );
         return;
       }
 
-      setSelectedInvoiceId(unique[0] || firstInvoiceId); // ✅ guarda invoiceId
+      setSelectedInvoiceId(unique[0] || firstInvoiceId);
     } else {
       setSelectedInvoiceId(null);
     }
 
-    // ✅ Mantiene lógica actual
     setGuides((prev) => {
       const map = new Map(prev.map((p) => [p._id, p]));
       selected.forEach((g) => map.set(g._id, g));
@@ -472,29 +659,32 @@ export default function BillsCreatePage() {
     setSelectedGuideIds([]);
     setOpenGuidesModal(false);
   }
-  async function appendItemToInvoice(invoiceId: string, item: { description: string; quantity: number; unitPrice: number }) {
-    // 1) Trae invoice actual
+
+  async function appendItemToInvoice(
+    invoiceId: string,
+    item: { description: string; quantity: number; unitPrice: number }
+  ) {
     const invRes = await apiFetch(`/invoices/${invoiceId}`, {}, router);
     const invoice = invRes?.invoice || invRes?.data || invRes;
 
     const currentItems = Array.isArray(invoice?.items) ? invoice.items : [];
 
-    // 2) Construye items nuevos con total
-    const newItem = {
+    const newItemObj = {
       description: item.description,
       quantity: item.quantity,
       unitPrice: item.unitPrice,
       total: Number(item.quantity) * Number(item.unitPrice),
     };
 
-    const mergedItems = [...currentItems, newItem];
+    const mergedItems = [...currentItems, newItemObj];
 
-    // 3) Recalcula subtotal y total (manteniendo tax si existe)
-    const subtotal = mergedItems.reduce((sum: number, it: any) => sum + Number(it.total || 0), 0);
+    const subtotal = mergedItems.reduce(
+      (sum: number, it: any) => sum + Number(it.total || 0),
+      0
+    );
     const tax = Number(invoice?.tax || 0);
     const total = subtotal + tax;
 
-    // 4) Update invoice
     return apiFetch(
       `/invoices/${invoiceId}`,
       {
@@ -510,8 +700,6 @@ export default function BillsCreatePage() {
     );
   }
 
-
-
   function removeGuide(id: string) {
     setGuides((prev) => prev.filter((g) => g._id !== id));
   }
@@ -526,9 +714,10 @@ export default function BillsCreatePage() {
 
     const invoiceId = selectedInvoiceId;
 
-    // ✅ Si hay guías seleccionadas pero no hay invoice, bloqueamos para evitar inconsistencias
     if (guides.length > 0 && !invoiceId) {
-      setError("No se detectó la factura (invoice) asociada a las guías seleccionadas. Verifica que las guías tengan invoiceId.");
+      setError(
+        "No se detectó la factura (invoice) asociada a las guías seleccionadas. Verifica que las guías tengan invoiceId."
+      );
       return;
     }
 
@@ -539,13 +728,11 @@ export default function BillsCreatePage() {
     };
 
     try {
-      // ✅ 1) Actualiza invoice (si existe)
       if (invoiceId) {
         setUpdatingInvoice(true);
         await appendItemToInvoice(invoiceId, itemPayload);
       }
 
-      // ✅ 2) Mantiene tu lógica actual (agregar al bill local)
       setItems((prev) => [
         ...prev,
         {
@@ -564,7 +751,6 @@ export default function BillsCreatePage() {
       setUpdatingInvoice(false);
     }
   }
-
 
   function removeItem(tempId: string) {
     setItems((prev) => prev.filter((x) => x.tempId !== tempId));
@@ -671,20 +857,23 @@ export default function BillsCreatePage() {
                 <ul>
                   {(clients || []).map((c) => {
                     const active = selectedClient?._id === c._id;
+                    const displayName = getClientDisplayName(c);
+                    const secondary = getClientSecondary(c);
+
                     return (
                       <li
                         key={c._id}
-                        className={`px-3 py-2 cursor-pointer border-b last:border-b-0 ${active ? "bg-sky-50" : "hover:bg-gray-50"
-                          }`}
+                        className={`px-3 py-2 cursor-pointer border-b last:border-b-0 ${
+                          active ? "bg-sky-50" : "hover:bg-gray-50"
+                        }`}
                         onClick={() => setSelectedClient(c)}
                       >
-                        <div className="font-medium">{c.name}</div>
-                        <div className="text-xs text-gray-600">
-                          {(c.email || "—")} • {(c.phone || "—")}
-                        </div>
+                        <div className="font-medium">{displayName}</div>
+                        <div className="text-xs text-gray-600">{secondary}</div>
                       </li>
                     );
                   })}
+
                   {!clients?.length && (
                     <li className="p-3 text-sm text-gray-500">No clients</li>
                   )}
@@ -697,9 +886,11 @@ export default function BillsCreatePage() {
             <div className="text-sm text-gray-500 mb-1">Selected</div>
             {selectedClient ? (
               <>
-                <div className="text-lg font-semibold">{selectedClient.name}</div>
+                <div className="text-lg font-semibold">
+                  {getClientDisplayName(selectedClient)}
+                </div>
                 <div className="text-sm text-gray-700">
-                  {(selectedClient.email || "—")} • {(selectedClient.phone || "—")}
+                  {getClientSecondary(selectedClient)}
                 </div>
                 <div className="mt-2 text-xs text-gray-500">{selectedClient._id}</div>
               </>
@@ -724,6 +915,7 @@ export default function BillsCreatePage() {
                 onChange={(e) => setBillNumber(e.target.value)}
               />
             </div>
+
             <div>
               <label className="block text-xs text-gray-600 mb-1">Issue Date</label>
               <input
@@ -733,6 +925,7 @@ export default function BillsCreatePage() {
                 onChange={(e) => setIssueDate(e.target.value)}
               />
             </div>
+
             <div>
               <label className="block text-xs text-gray-600 mb-1">Due Date</label>
               <input
@@ -751,12 +944,14 @@ export default function BillsCreatePage() {
             >
               Include Service
             </button>
+
             <button
               className="px-4 py-2 rounded bg-indigo-600 text-white text-sm"
               onClick={() => setOpenItemModal(true)}
             >
               Include Item
             </button>
+
             <button
               className="px-4 py-2 rounded bg-blue-700 text-white text-sm disabled:bg-blue-300"
               disabled={!selectedClient}
@@ -826,8 +1021,12 @@ export default function BillsCreatePage() {
                   <td className="border px-2 py-2 text-right">
                     {money(s.price * s.quantity)}
                   </td>
-                  <td className="border px-2 py-2 text-center">{s.modifiable ? "✔" : "—"}</td>
-                  <td className="border px-2 py-2 text-center">{s.onTotal ? "✔" : "—"}</td>
+                  <td className="border px-2 py-2 text-center">
+                    {s.modifiable ? "✔" : "—"}
+                  </td>
+                  <td className="border px-2 py-2 text-center">
+                    {s.onTotal ? "✔" : "—"}
+                  </td>
                   <td className="border px-2 py-2 text-center">
                     <button
                       className="px-2 py-1 rounded bg-red-50 text-red-700 border border-red-200 hover:bg-red-100"
@@ -869,7 +1068,9 @@ export default function BillsCreatePage() {
               <input
                 className="w-full border px-3 py-2 rounded"
                 value={manualService.description}
-                onChange={(e) => setManualService((p) => ({ ...p, description: e.target.value }))}
+                onChange={(e) =>
+                  setManualService((p) => ({ ...p, description: e.target.value }))
+                }
               />
             </div>
 
@@ -899,7 +1100,9 @@ export default function BillsCreatePage() {
                 min={1}
                 className="w-full border px-3 py-2 rounded"
                 value={manualService.quantity}
-                onChange={(e) => setManualService((p) => ({ ...p, quantity: Number(e.target.value) }))}
+                onChange={(e) =>
+                  setManualService((p) => ({ ...p, quantity: Number(e.target.value) }))
+                }
               />
             </div>
 
@@ -908,7 +1111,9 @@ export default function BillsCreatePage() {
                 <input
                   type="checkbox"
                   checked={manualService.modifiable}
-                  onChange={(e) => setManualService((p) => ({ ...p, modifiable: e.target.checked }))}
+                  onChange={(e) =>
+                    setManualService((p) => ({ ...p, modifiable: e.target.checked }))
+                  }
                 />
                 Modifiable
               </label>
@@ -917,7 +1122,9 @@ export default function BillsCreatePage() {
                 <input
                   type="checkbox"
                   checked={manualService.onTotal}
-                  onChange={(e) => setManualService((p) => ({ ...p, onTotal: e.target.checked }))}
+                  onChange={(e) =>
+                    setManualService((p) => ({ ...p, onTotal: e.target.checked }))
+                  }
                 />
                 Sobre Total
               </label>
@@ -1015,7 +1222,16 @@ export default function BillsCreatePage() {
                       {g.number}
                     </span>
                   </td>
-                  <td className="border px-2 py-2">{g.recipientName || "—"}</td>
+                  <td className="border px-2 py-2">
+                    <div className="leading-tight">
+                      <div className="font-medium">
+                        {getBeneficiaryDisplayFromGuide(g, selectedClient)}
+                      </div>
+                      <div className="text-[11px] text-gray-500">
+                        {getBeneficiarySecondaryFromGuide(g, selectedClient)}
+                      </div>
+                    </div>
+                  </td>
                   <td className="border px-2 py-2 max-w-[340px] truncate">
                     {g.destination || "—"}
                   </td>
@@ -1083,7 +1299,7 @@ export default function BillsCreatePage() {
 
       {/* -------------------- MODALS -------------------- */}
 
-      {/* Include Services Modal (LOCAL) */}
+      {/* Include Services Modal */}
       <Modal
         open={openServicesModal}
         title="Select Services"
@@ -1163,7 +1379,6 @@ export default function BillsCreatePage() {
           </table>
         </div>
 
-        {/* Add new service inside modal */}
         <div className="mt-4 border rounded p-4">
           <div className="font-semibold text-sm mb-3">Add new service</div>
 
@@ -1173,7 +1388,9 @@ export default function BillsCreatePage() {
               <input
                 className="w-full border px-3 py-2 rounded"
                 value={newCatalogService.name}
-                onChange={(e) => setNewCatalogService((p) => ({ ...p, name: e.target.value }))}
+                onChange={(e) =>
+                  setNewCatalogService((p) => ({ ...p, name: e.target.value }))
+                }
               />
             </div>
 
@@ -1193,7 +1410,9 @@ export default function BillsCreatePage() {
               <input
                 className="w-full border px-3 py-2 rounded"
                 value={newCatalogService.measure}
-                onChange={(e) => setNewCatalogService((p) => ({ ...p, measure: e.target.value }))}
+                onChange={(e) =>
+                  setNewCatalogService((p) => ({ ...p, measure: e.target.value }))
+                }
               />
             </div>
 
@@ -1203,7 +1422,9 @@ export default function BillsCreatePage() {
                 type="number"
                 className="w-full border px-3 py-2 rounded"
                 value={newCatalogService.price}
-                onChange={(e) => setNewCatalogService((p) => ({ ...p, price: Number(e.target.value) }))}
+                onChange={(e) =>
+                  setNewCatalogService((p) => ({ ...p, price: Number(e.target.value) }))
+                }
               />
             </div>
 
@@ -1223,7 +1444,9 @@ export default function BillsCreatePage() {
                 <input
                   type="checkbox"
                   checked={newCatalogService.onTotal}
-                  onChange={(e) => setNewCatalogService((p) => ({ ...p, onTotal: e.target.checked }))}
+                  onChange={(e) =>
+                    setNewCatalogService((p) => ({ ...p, onTotal: e.target.checked }))
+                  }
                 />
                 Sobre Total
               </label>
@@ -1252,6 +1475,7 @@ export default function BillsCreatePage() {
             <div className="text-xs text-gray-600">
               Selected: <span className="font-semibold">{selectedGuideIds.length}</span>
             </div>
+
             <div className="flex gap-2">
               <button
                 className="px-4 py-2 rounded border"
@@ -1262,6 +1486,7 @@ export default function BillsCreatePage() {
               >
                 Cancel
               </button>
+
               <button
                 className="px-4 py-2 rounded bg-blue-700 text-white disabled:bg-blue-300"
                 disabled={loadingGuides || !selectedGuideIds.length}
@@ -1278,7 +1503,10 @@ export default function BillsCreatePage() {
         ) : (
           <div className="space-y-3">
             <div className="text-sm text-gray-600">
-              Client: <span className="font-semibold">{selectedClient.name}</span>
+              Client:{" "}
+              <span className="font-semibold">
+                {getClientDisplayName(selectedClient)}
+              </span>
             </div>
 
             <div className="overflow-auto border rounded max-h-[500px]">
@@ -1305,6 +1533,7 @@ export default function BillsCreatePage() {
                     <>
                       {unbilledGuides.map((g) => {
                         const checked = selectedGuideIds.includes(g._id);
+
                         return (
                           <tr key={g._id} className={checked ? "bg-sky-50" : ""}>
                             <td className="border px-2 py-2 text-center">
@@ -1314,19 +1543,36 @@ export default function BillsCreatePage() {
                                 onChange={() => toggleGuide(g._id)}
                               />
                             </td>
+
                             <td className="border px-2 py-2">
                               <span className="inline-flex px-2 py-0.5 rounded bg-green-600 text-white text-[10px] font-semibold">
                                 {g.number}
                               </span>
                             </td>
-                            <td className="border px-2 py-2">{g.recipientName || "—"}</td>
+
+                            <td className="border px-2 py-2">
+                              <div className="leading-tight">
+                                <div className="font-medium">
+                                  {getBeneficiaryDisplayFromGuide(g, selectedClient)}
+                                </div>
+                                <div className="text-[11px] text-gray-500">
+                                  {getBeneficiarySecondaryFromGuide(g, selectedClient)}
+                                </div>
+                              </div>
+                            </td>
+
                             <td className="border px-2 py-2 max-w-[380px] truncate">
                               {g.destination || "—"}
                             </td>
-                            <td className="border px-2 py-2 text-center">{g.pieces ?? "—"}</td>
+
+                            <td className="border px-2 py-2 text-center">
+                              {g.pieces ?? "—"}
+                            </td>
+
                             <td className="border px-2 py-2 text-center">
                               {typeof g.weightKg === "number" ? money(g.weightKg) : "—"}
                             </td>
+
                             <td className="border px-2 py-2 text-right">
                               {money(getGuideAmount(g))}
                             </td>
@@ -1357,9 +1603,13 @@ export default function BillsCreatePage() {
         onClose={() => setOpenItemModal(false)}
         footer={
           <div className="flex items-center justify-end gap-2">
-            <button className="px-4 py-2 rounded border" onClick={() => setOpenItemModal(false)}>
+            <button
+              className="px-4 py-2 rounded border"
+              onClick={() => setOpenItemModal(false)}
+            >
               Cancel
             </button>
+
             <button
               className="px-4 py-2 rounded bg-indigo-600 text-white disabled:bg-indigo-300"
               onClick={addItemLine}
@@ -1379,6 +1629,7 @@ export default function BillsCreatePage() {
               onChange={(e) => setNewItem((p) => ({ ...p, description: e.target.value }))}
             />
           </div>
+
           <div>
             <label className="block text-xs text-gray-600 mb-1">Qty</label>
             <input
@@ -1389,6 +1640,7 @@ export default function BillsCreatePage() {
               onChange={(e) => setNewItem((p) => ({ ...p, quantity: Number(e.target.value) }))}
             />
           </div>
+
           <div>
             <label className="block text-xs text-gray-600 mb-1">Unit Price</label>
             <input
