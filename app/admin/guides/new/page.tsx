@@ -49,6 +49,7 @@ interface Client {
 interface City {
   _id: string;
   label: string;
+  country: string;
   postalCode?: string | null;
   isActive: boolean;
 }
@@ -315,9 +316,86 @@ export default function CreateGuidePage() {
   // ====== Saving guide ======
   const [saving, setSaving] = useState(false);
 
+  const emptyNewCityForm = () => ({
+    label: "",
+    country: "",
+    postalCode: "",
+  });
+
+  const [createClientNewCity, setCreateClientNewCity] = useState(false);
+  const [createBeneficiaryNewCity, setCreateBeneficiaryNewCity] = useState(false);
+  const [editClientNewCity, setEditClientNewCity] = useState(false);
+  const [editBeneficiaryNewCity, setEditBeneficiaryNewCity] = useState(false);
+
+  const [createClientCityForm, setCreateClientCityForm] = useState(emptyNewCityForm());
+  const [createBeneficiaryCityForm, setCreateBeneficiaryCityForm] = useState(emptyNewCityForm());
+  const [editClientCityForm, setEditClientCityForm] = useState(emptyNewCityForm());
+  const [editBeneficiaryCityForm, setEditBeneficiaryCityForm] = useState(emptyNewCityForm());
+
+  const [savingNewCity, setSavingNewCity] = useState(false);
   /** =========================
    *  Cities helpers
    *  ========================= */
+  const loadCities = async () => {
+    setLoadingCities(true);
+    try {
+      const r: any = await Api("GET", "cities", null, router);
+      if (r?.success) {
+        setCities(r.cities || []);
+        return r.cities || [];
+      }
+      return [];
+    } catch {
+      showToast("Error loading cities", "error");
+      return [];
+    } finally {
+      setLoadingCities(false);
+    }
+  };
+
+  const validateNewCityForm = (form: { label: string; country: string; postalCode: string }) => {
+    if (!form.label.trim()) return "City name is required";
+    if (!form.country.trim()) return "Country is required";
+    return null;
+  };
+
+  const createCityAndRefresh = async (form: { label: string; country: string; postalCode: string }) => {
+    const validationError = validateNewCityForm(form);
+    if (validationError) {
+      showToast(validationError, "error");
+      return null;
+    }
+
+    setSavingNewCity(true);
+    try {
+      const payload = {
+        label: form.label.trim(),
+        country: form.country.trim(),
+        postalCode: form.postalCode.trim() || null,
+      };
+
+      const res: any = await Api("POST", "cities", payload, router);
+
+      if (!res?.success || !res?.city) {
+        showToast(res?.message || "Error creating city", "error");
+        return null;
+      }
+
+      const createdCity = res.city;
+      const refreshedCities = await loadCities();
+
+      const matchedCity =
+        refreshedCities.find((c: City) => c._id === createdCity._id) || createdCity;
+
+      showToast("City created successfully", "success");
+      return matchedCity;
+    } catch (err: any) {
+      showToast(err?.message || "Error creating city", "error");
+      return null;
+    } finally {
+      setSavingNewCity(false);
+    }
+  };
   const cityById = useMemo(() => {
     const map = new Map<string, City>();
     for (const c of cities) map.set(c._id, c);
@@ -409,18 +487,7 @@ export default function CreateGuidePage() {
       }
     })();
 
-    (async () => {
-      setLoadingCities(true);
-      try {
-        // loads all active cities
-        const r: any = await Api("GET", "cities", null, router);
-        if (r?.success) setCities(r.cities || []);
-      } catch {
-        showToast("Error loading cities", "error");
-      } finally {
-        setLoadingCities(false);
-      }
-    })();
+    loadCities();
   }, [router, showToast]);
 
   /** =========================
@@ -628,26 +695,44 @@ export default function CreateGuidePage() {
     setCreatingClient(true);
 
     try {
-      const p = clientForm.profile;
+      let profile = { ...clientForm.profile };
+      let beneficiary = { ...clientForm.beneficiary };
 
-      if (!isPersonNameValid(p)) {
+      if (createClientNewCity) {
+        const createdCity = await createCityAndRefresh(createClientCityForm);
+        if (!createdCity) return;
+
+        profile = applyCitySelection(profile, createdCity._id);
+        profile.cityLabel = createdCity.label;
+        profile.zipCode = createdCity.postalCode || "";
+      }
+
+      if (addBeneficiaryNow && createBeneficiaryNewCity) {
+        const createdCity = await createCityAndRefresh(createBeneficiaryCityForm);
+        if (!createdCity) return;
+
+        beneficiary = applyCitySelection(beneficiary, createdCity._id);
+        beneficiary.cityLabel = createdCity.label;
+        beneficiary.zipCode = createdCity.postalCode || "";
+      }
+
+      if (!isPersonNameValid(profile)) {
         showToast("Client name is required (first/last or company name)", "error");
         return;
       }
 
       const payload: any = {
         agency: clientForm.agency,
-        profile: clientForm.profile,
+        profile,
         beneficiaries: [],
       };
 
       if (addBeneficiaryNow) {
-        const b = clientForm.beneficiary;
-        if (!isPersonNameValid(b)) {
+        if (!isPersonNameValid(beneficiary)) {
           showToast("Beneficiary name is required (first/last or company name)", "error");
           return;
         }
-        payload.beneficiaries = [b];
+        payload.beneficiaries = [beneficiary];
       }
 
       const data: any = await Api("POST", "clients", payload, router);
@@ -656,14 +741,18 @@ export default function CreateGuidePage() {
         return;
       }
 
-      const newClient: Client = data.client;
+      const newClient: Client = normalizeClient(data.client);
 
       setClients((prev) => [newClient, ...prev]);
       setSenderClientId(newClient._id);
       setShowCreateClientModal(false);
 
-      // reset form
       setAddBeneficiaryNow(false);
+      setCreateClientNewCity(false);
+      setCreateBeneficiaryNewCity(false);
+      setCreateClientCityForm(emptyNewCityForm());
+      setCreateBeneficiaryCityForm(emptyNewCityForm());
+
       setClientForm({
         agency: "Via logistics",
         profile: emptyPerson(),
@@ -705,9 +794,20 @@ export default function CreateGuidePage() {
 
     setUpdatingClient(true);
     try {
+      let profile = { ...editClientForm.profile };
+
+      if (editClientNewCity) {
+        const createdCity = await createCityAndRefresh(editClientCityForm);
+        if (!createdCity) return;
+
+        profile = applyCitySelection(profile, createdCity._id);
+        profile.cityLabel = createdCity.label;
+        profile.zipCode = createdCity.postalCode || "";
+      }
+
       const payload = {
         agency: editClientForm.agency,
-        profile: editClientForm.profile,
+        profile,
         beneficiaries: senderClient.beneficiaries || [],
       };
 
@@ -719,10 +819,13 @@ export default function CreateGuidePage() {
 
       const refreshed: any = await Api("GET", `clients/${senderClientId}`, null, router);
       if (refreshed?.success) {
-        setSenderClient(normalizeClient(refreshed.client));
-        setClients((prev) => prev.map((c) => (c._id === senderClientId ? normalizeClient(refreshed.client) : c)));
+        const normalized = normalizeClient(refreshed.client);
+        setSenderClient(normalized);
+        setClients((prev) => prev.map((c) => (c._id === senderClientId ? normalized : c)));
       }
 
+      setEditClientNewCity(false);
+      setEditClientCityForm(emptyNewCityForm());
       setShowEditClientModal(false);
       showToast("Client updated successfully", "success");
     } catch (err: any) {
@@ -743,14 +846,24 @@ export default function CreateGuidePage() {
       return;
     }
 
-    if (!isPersonNameValid(beneficiaryForm)) {
+    let newBeneficiary = { ...beneficiaryForm };
+
+    if (createBeneficiaryNewCity) {
+      const createdCity = await createCityAndRefresh(createBeneficiaryCityForm);
+      if (!createdCity) return;
+
+      newBeneficiary = applyCitySelection(newBeneficiary, createdCity._id);
+      newBeneficiary.cityLabel = createdCity.label;
+      newBeneficiary.zipCode = createdCity.postalCode || "";
+    }
+
+    if (!isPersonNameValid(newBeneficiary)) {
       showToast("Beneficiary name is required (first/last or company name)", "error");
       return;
     }
 
     setSavingBeneficiary(true);
     try {
-      // Ensure we have current sender data
       const res = (await Api("GET", `clients/${senderClientId}`, null, router)) as any;
       const current: Client | null = senderClient ?? (res?.client as Client | null);
 
@@ -759,7 +872,7 @@ export default function CreateGuidePage() {
         return;
       }
 
-      const beneficiaries = [...(current?.beneficiaries || []), beneficiaryForm];
+      const beneficiaries = [...(current?.beneficiaries || []), newBeneficiary];
 
       const payload = {
         agency: current.agency || "Via logistics",
@@ -775,11 +888,14 @@ export default function CreateGuidePage() {
 
       const refreshed: any = await Api("GET", `clients/${senderClientId}`, null, router);
       if (refreshed?.success) {
-        setSenderClient(refreshed.client);
-        setBeneficiaryIndex(Math.max(0, (refreshed.client?.beneficiaries?.length || 1) - 1));
-        setClients((prev) => prev.map((c) => (c._id === senderClientId ? { ...c, ...refreshed.client } : c)));
+        const normalized = normalizeClient(refreshed.client);
+        setSenderClient(normalized);
+        setBeneficiaryIndex(Math.max(0, (normalized?.beneficiaries?.length || 1) - 1));
+        setClients((prev) => prev.map((c) => (c._id === senderClientId ? normalized : c)));
       }
 
+      setCreateBeneficiaryNewCity(false);
+      setCreateBeneficiaryCityForm(emptyNewCityForm());
       setBeneficiaryForm(emptyBeneficiary());
       setShowAddBeneficiaryModal(false);
       showToast("Beneficiary added successfully", "success");
@@ -820,7 +936,19 @@ export default function CreateGuidePage() {
     e.preventDefault();
 
     if (!senderClientId || !senderClient) return;
-    if (!isPersonNameValid(editBeneficiaryForm)) {
+
+    let updatedBeneficiary = { ...editBeneficiaryForm };
+
+    if (editBeneficiaryNewCity) {
+      const createdCity = await createCityAndRefresh(editBeneficiaryCityForm);
+      if (!createdCity) return;
+
+      updatedBeneficiary = applyCitySelection(updatedBeneficiary, createdCity._id);
+      updatedBeneficiary.cityLabel = createdCity.label;
+      updatedBeneficiary.zipCode = createdCity.postalCode || "";
+    }
+
+    if (!isPersonNameValid(updatedBeneficiary)) {
       showToast("Beneficiary name is required (first/last or company name)", "error");
       return;
     }
@@ -835,7 +963,7 @@ export default function CreateGuidePage() {
 
       beneficiaries[beneficiaryIndex] = {
         ...beneficiaries[beneficiaryIndex],
-        ...editBeneficiaryForm,
+        ...updatedBeneficiary,
       };
 
       const payload = {
@@ -852,10 +980,13 @@ export default function CreateGuidePage() {
 
       const refreshed: any = await Api("GET", `clients/${senderClientId}`, null, router);
       if (refreshed?.success) {
-        setSenderClient(refreshed.client);
-        setClients((prev) => prev.map((c) => (c._id === senderClientId ? { ...c, ...refreshed.client } : c)));
+        const normalized = normalizeClient(refreshed.client);
+        setSenderClient(normalized);
+        setClients((prev) => prev.map((c) => (c._id === senderClientId ? normalized : c)));
       }
 
+      setEditBeneficiaryNewCity(false);
+      setEditBeneficiaryCityForm(emptyNewCityForm());
       setShowEditBeneficiaryModal(false);
       showToast("Beneficiary updated successfully", "success");
     } catch (err: any) {
@@ -978,6 +1109,95 @@ export default function CreateGuidePage() {
   const setServicePrice = (id: string, price: number) => {
     setServices((prev) => prev.map((s) => (s.id === id ? { ...s, price: Math.max(0, toNum(price || 0)) } : s)));
   };
+
+  const renderNewCityFields = ({
+    checked,
+    setChecked,
+    form,
+    setForm,
+    onSaveCity,
+    savingNewCity,
+  }: {
+    checked: boolean;
+    setChecked: React.Dispatch<React.SetStateAction<boolean>>;
+    form: { label: string; country: string; postalCode: string };
+    setForm: React.Dispatch<
+      React.SetStateAction<{ label: string; country: string; postalCode: string }>
+    >;
+    onSaveCity: () => Promise<void> | void;
+    savingNewCity: boolean;
+  }) => (
+    <div className="mt-3">
+      <div className="flex items-center gap-2">
+        <input
+          id={`new-city-${Math.random()}`}
+          type="checkbox"
+          checked={checked}
+          onChange={(e) => {
+            const enabled = e.target.checked;
+            setChecked(enabled);
+            if (!enabled) {
+              setForm(emptyNewCityForm());
+            }
+          }}
+        />
+        <label className="text-sm text-gray-700">
+          City not found? Add a new one
+        </label>
+      </div>
+
+      {checked && (
+        <div className="mt-3 border rounded-lg p-4 bg-gray-50 grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label className="label">City name *</label>
+            <input
+              className="input w-full"
+              value={form.label}
+              onChange={(e) =>
+                setForm((prev) => ({ ...prev, label: e.target.value }))
+              }
+              placeholder="e.g. Medellín"
+            />
+          </div>
+
+          <div>
+            <label className="label">Country *</label>
+            <input
+              className="input w-full"
+              value={form.country}
+              onChange={(e) =>
+                setForm((prev) => ({ ...prev, country: e.target.value }))
+              }
+              placeholder="e.g. Colombia"
+            />
+          </div>
+
+          <div className="sm:col-span-2">
+            <label className="label">ZIP Code</label>
+            <input
+              className="input w-full"
+              value={form.postalCode}
+              onChange={(e) =>
+                setForm((prev) => ({ ...prev, postalCode: e.target.value }))
+              }
+              placeholder="e.g. 050001"
+            />
+          </div>
+
+          <div className="sm:col-span-2 flex justify-end">
+            <button
+              type="button"
+              className="btn-outline"
+              onClick={onSaveCity}
+              disabled={savingNewCity}
+            >
+              {savingNewCity ? "Saving city..." : "Save city"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -1554,7 +1774,7 @@ export default function CreateGuidePage() {
                   <option value="">Choose...</option>
                   {cities.map((c) => (
                     <option key={c._id} value={c._id}>
-                      {c.label}
+                      {c.label} {c.country ? `(${c.country})` : ""}
                     </option>
                   ))}
                 </select>
@@ -1564,6 +1784,25 @@ export default function CreateGuidePage() {
                 <label className="label">ZIP Code</label>
                 <input className="input" value={clientForm.profile.zipCode || ""} onChange={(e) => updateClientProfile({ zipCode: e.target.value })} />
               </div>
+              {renderNewCityFields({
+                checked: createClientNewCity,
+                setChecked: setCreateClientNewCity,
+                form: createClientCityForm,
+                setForm: setCreateClientCityForm,
+                savingNewCity,
+                onSaveCity: async () => {
+                  const createdCity = await createCityAndRefresh(createClientCityForm);
+                  if (!createdCity) return;
+
+                  setClientForm((prev) => ({
+                    ...prev,
+                    profile: applyCitySelection(prev.profile, createdCity._id),
+                  }));
+
+                  setCreateClientNewCity(false);
+                  setCreateClientCityForm(emptyNewCityForm());
+                },
+              })}
             </div>
           </div>
 
@@ -1660,6 +1899,25 @@ export default function CreateGuidePage() {
                   <label className="label">ZIP Code</label>
                   <input className="input" value={clientForm.beneficiary.zipCode || ""} onChange={(e) => updateClientBeneficiary({ zipCode: e.target.value })} />
                 </div>
+                {renderNewCityFields({
+                  checked: createBeneficiaryNewCity,
+                  setChecked: setCreateBeneficiaryNewCity,
+                  form: createBeneficiaryCityForm,
+                  setForm: setCreateBeneficiaryCityForm,
+                  savingNewCity,
+                  onSaveCity: async () => {
+                    const createdCity = await createCityAndRefresh(createBeneficiaryCityForm);
+                    if (!createdCity) return;
+
+                    setClientForm((prev) => ({
+                      ...prev,
+                      beneficiary: applyCitySelection(prev.beneficiary, createdCity._id),
+                    }));
+
+                    setCreateBeneficiaryNewCity(false);
+                    setCreateBeneficiaryCityForm(emptyNewCityForm());
+                  },
+                })}
               </div>
             </div>
           )}
@@ -1755,7 +2013,25 @@ export default function CreateGuidePage() {
                 <label className="label">ZIP Code</label>
                 <input className="input" value={editClientForm.profile.zipCode || ""} onChange={(e) => updateEditClientProfile({ zipCode: e.target.value })} />
               </div>
+              {renderNewCityFields({
+                checked: editClientNewCity,
+                setChecked: setEditClientNewCity,
+                form: editClientCityForm,
+                setForm: setEditClientCityForm,
+                savingNewCity,
+                onSaveCity: async () => {
+                  const createdCity = await createCityAndRefresh(editClientCityForm);
+                  if (!createdCity) return;
 
+                  setEditClientForm((prev) => ({
+                    ...prev,
+                    profile: applyCitySelection(prev.profile, createdCity._id),
+                  }));
+
+                  setEditClientNewCity(false);
+                  setEditClientCityForm(emptyNewCityForm());
+                },
+              })}
               <div className="mt-3 text-xs text-gray-500 col-span-2">
                 * Nota: Los beneficiarios no se editan aquí. Para editar un beneficiario usa “Edit beneficiary”.
               </div>
@@ -1857,6 +2133,22 @@ export default function CreateGuidePage() {
               <label className="label">ZIP Code</label>
               <input className="input" value={beneficiaryForm.zipCode || ""} onChange={(e) => setBeneficiaryForm((p) => ({ ...p, zipCode: e.target.value }))} />
             </div>
+            {renderNewCityFields({
+              checked: createBeneficiaryNewCity,
+              setChecked: setCreateBeneficiaryNewCity,
+              form: createBeneficiaryCityForm,
+              setForm: setCreateBeneficiaryCityForm,
+              savingNewCity,
+              onSaveCity: async () => {
+                const createdCity = await createCityAndRefresh(createBeneficiaryCityForm);
+                if (!createdCity) return;
+
+                setBeneficiaryForm((prev) => applyCitySelection(prev, createdCity._id));
+
+                setCreateBeneficiaryNewCity(false);
+                setCreateBeneficiaryCityForm(emptyNewCityForm());
+              },
+            })}
           </div>
 
           <div className="flex justify-end space-x-3 pt-4 border-t border-gray-200">
@@ -1954,6 +2246,22 @@ export default function CreateGuidePage() {
               <label className="label">ZIP Code</label>
               <input className="input" value={editBeneficiaryForm.zipCode || ""} onChange={(e) => setEditBeneficiaryForm((p) => ({ ...p, zipCode: e.target.value }))} />
             </div>
+            {renderNewCityFields({
+              checked: editBeneficiaryNewCity,
+              setChecked: setEditBeneficiaryNewCity,
+              form: editBeneficiaryCityForm,
+              setForm: setEditBeneficiaryCityForm,
+              savingNewCity,
+              onSaveCity: async () => {
+                const createdCity = await createCityAndRefresh(editBeneficiaryCityForm);
+                if (!createdCity) return;
+
+                setEditBeneficiaryForm((prev) => applyCitySelection(prev, createdCity._id));
+
+                setEditBeneficiaryNewCity(false);
+                setEditBeneficiaryCityForm(emptyNewCityForm());
+              },
+            })}
           </div>
 
           <div className="flex justify-end space-x-3 pt-4 border-t border-gray-200">
