@@ -640,7 +640,7 @@ export default function GuidesPage() {
 
       const local = guides.find((g) => g._id === id);
       if (local) {
-        router.push(`/admin/guides/${local._id}/edit`);
+        router.push(`/admin/guides/${local._id}`);
         return;
       }
 
@@ -652,7 +652,7 @@ export default function GuidesPage() {
         throw new Error(resp?.message || "Guide not found");
       }
 
-      router.push(`/admin/guides/${resp.guide._id}/edit`);
+      router.push(`/admin/guides/${resp.guide._id}`);
     } catch (e: any) {
       showToast(e?.message || "Guide not found", "error");
     } finally {
@@ -866,9 +866,9 @@ export default function GuidesPage() {
         <div className="flex items-center gap-3">
           <button
             type="button"
-            onClick={() => router.push(`/admin/guides/${row._id}/edit`)}
+            onClick={() => router.push(`/admin/guides/${row._id}`)}
             className="text-blue-700 hover:underline font-medium"
-            title="Abrir guía"
+            title="Ver guía"
           >
             {padGuideNumber(row.guideNumber)}
           </button>
@@ -1323,7 +1323,7 @@ export default function GuidesPage() {
               className="btn-outline flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Search className="h-4 w-4 mr-2" />
-              {finding ? "Searching..." : "Open for update"}
+              {finding ? "Searching..." : "Open guide"}
             </button>
           </div>
 
