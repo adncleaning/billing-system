@@ -1067,7 +1067,7 @@ export default function GuidesPage() {
 
           <button
             type="button"
-            onClick={() => router.push("/admin/guides/new")}
+            onClick={() => router.push("/admin/guides/create")}
             className="btn-primary flex items-center"
           >
             <Plus className="h-5 w-5 mr-2" />

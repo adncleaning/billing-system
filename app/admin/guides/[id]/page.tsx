@@ -163,6 +163,13 @@ type CancelGuideResponse = {
   message?: string;
 };
 
+type BulkStatusResponse = {
+  success: boolean;
+  message?: string;
+  updatedGuides?: number;
+  newStatus?: string;
+};
+
 function formatDateTime(value?: string | null) {
   if (!value) return "—";
   const d = new Date(value);
@@ -301,6 +308,10 @@ export default function ShowGuidePage() {
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelComment, setCancelComment] = useState("");
   const [cancelling, setCancelling] = useState(false);
+  const [statusModalOpen, setStatusModalOpen] = useState(false);
+  const [statusValue, setStatusValue] = useState("");
+  const [statusComment, setStatusComment] = useState("");
+  const [savingStatus, setSavingStatus] = useState(false);
 
   const fetchGuide = async () => {
     try {
@@ -348,6 +359,53 @@ export default function ShowGuidePage() {
     }
   };
 
+  const openStatusModal = () => {
+    setStatusValue("");
+    setStatusComment("");
+    setStatusModalOpen(true);
+  };
+
+  const closeStatusModal = () => {
+    if (savingStatus) return;
+    setStatusModalOpen(false);
+  };
+
+  const handleUpdateGuideStatus = async () => {
+    try {
+      if (!guide?._id) return;
+
+      if (!statusValue.trim()) {
+        return;
+      }
+
+      setSavingStatus(true);
+
+      const res = (await Api(
+        "POST",
+        "guides/bulk-status",
+        {
+          guideIds: [guide._id],
+          newStatus: statusValue.trim(),
+          comment: statusComment.trim(),
+        },
+        router
+      )) as BulkStatusResponse;
+
+      if (!res?.success) {
+        throw new Error(res?.message || "Error updating guide status");
+      }
+
+      setStatusModalOpen(false);
+      setStatusValue("");
+      setStatusComment("");
+      await fetchGuide();
+    } catch (error: any) {
+      console.error(error);
+    } finally {
+      setSavingStatus(false);
+    }
+  };
+
   useEffect(() => {
     if (token && guideId) {
       fetchGuide();
@@ -364,6 +422,20 @@ export default function ShowGuidePage() {
     if (!guide?.internalNotes?.length) return [];
     return [...guide.internalNotes].slice().reverse();
   }, [guide?.internalNotes]);
+
+  const statusOptions = [
+    "CREATED",
+    "PENDING",
+    "COMPLETE",
+    "CANCELLED",
+    "RECIBIDO_EN_BODEGA_ORIGEN",
+    "GUIA_CREADA",
+    "DESPACHADO",
+    "EN_TRANSITO_INTERNACIONAL",
+    "LLEGADA_PAIS_DESTINO",
+    "EN_DISTRIBUCION",
+    "ENTREGADO",
+  ];
 
   if (loading) {
     return (
@@ -447,15 +519,33 @@ export default function ShowGuidePage() {
             <ActionDropdown
               label="Estatus"
               items={[
-                { label: "Consolidar" },
-                { label: "Nuevo Estatus" },
-                { label: "Finalizar" },
+                {
+                  label: "Consolidar",
+                  onClick: () => router.push(`/admin/consolidated/create`),
+                },
+                {
+                  label: "Nuevo Estatus",
+                  onClick: openStatusModal,
+                },
+                {
+                  label: "Finalizar",
+                  onClick: () => {
+                    setStatusValue("COMPLETE");
+                    setStatusComment("");
+                    setStatusModalOpen(true);
+                  },
+                },
               ]}
             />
 
             <ActionDropdown
               label="Administración"
-              items={[{ label: "Nueva Factura" }]}
+              items={[
+                {
+                  label: "Nueva Factura",
+                  onClick: () => router.push(`/admin/bills/create?guideId=${guide._id}`),
+                },
+              ]}
             />
 
             <ActionDropdown
@@ -1045,6 +1135,155 @@ export default function ShowGuidePage() {
                   </button>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {statusModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={closeStatusModal}
+          />
+
+          <div className="relative bg-white w-full max-w-2xl rounded-xl shadow-lg flex flex-col max-h-[90vh]">
+            <div className="flex items-center justify-between px-6 py-5 border-b shrink-0">
+              <div>
+                <h3 className="text-xl font-semibold text-gray-900">
+                  Actualizar estatus de la guía
+                </h3>
+                <p className="text-sm text-gray-500 mt-1">
+                  Selecciona el nuevo estatus y agrega un comentario para la bitácora interna.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={closeStatusModal}
+                className="p-2 rounded hover:bg-gray-100"
+                disabled={savingStatus}
+                aria-label="Close"
+              >
+                <ChevronDown className="h-5 w-5 text-gray-600 rotate-45" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-5 overflow-y-auto">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-2">
+                    Guía seleccionada
+                  </label>
+                  <div className="input bg-gray-50">
+                    {guide.number || "—"}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-gray-500 mb-2">
+                    Nuevo estatus
+                  </label>
+                  <select
+                    className="input"
+                    value={statusValue}
+                    onChange={(e) => setStatusValue(e.target.value)}
+                    disabled={savingStatus}
+                  >
+                    <option value="">Seleccionar...</option>
+                    {statusOptions.map((status) => (
+                      <option key={status} value={status}>
+                        {status}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-500 mb-2">
+                  Comentario (Bitácora interna)
+                </label>
+                <textarea
+                  className="input min-h-[110px]"
+                  value={statusComment}
+                  onChange={(e) => setStatusComment(e.target.value)}
+                  placeholder="Ej: Cambio validado por recepción en bodega."
+                  disabled={savingStatus}
+                />
+                <div className="text-xs text-gray-400 mt-1">
+                  Este comentario se guardará en el historial y en la bitácora interna.
+                </div>
+              </div>
+
+              <div className="border rounded-lg overflow-hidden">
+                <div className="grid grid-cols-12 bg-gray-50 text-xs text-gray-500 px-3 py-2">
+                  <div className="col-span-2">Número</div>
+                  <div className="col-span-3">Estatus actual</div>
+                  <div className="col-span-3">Remitente</div>
+                  <div className="col-span-3">Destinatario</div>
+                  <div className="col-span-1">Fecha</div>
+                </div>
+
+                <div className="grid grid-cols-12 px-3 py-3 border-t text-sm items-center">
+                  <div className="col-span-2 font-medium text-blue-700">
+                    {guide.number || "—"}
+                  </div>
+
+                  <div className="col-span-3">
+                    <span
+                      className={`inline-flex items-center border px-2 py-1 text-xs font-semibold ${statusBadgeClass(
+                        guide.status
+                      )}`}
+                    >
+                      {guide.status || "CREATED"}
+                    </span>
+                  </div>
+
+                  <div className="col-span-3">
+                    <div className="font-medium text-gray-900">
+                      {guide.senderName || "—"}
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      {guide.senderSecondary || " "}
+                    </div>
+                  </div>
+
+                  <div className="col-span-3">
+                    <div className="font-medium text-gray-900">
+                      {guide.recipientName || "—"}
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      {guide.recipientCity || guide.city || " "}
+                    </div>
+                  </div>
+
+                  <div className="col-span-1 text-xs text-gray-600">
+                    {guide.createdAt
+                      ? new Date(guide.createdAt).toLocaleDateString()
+                      : "—"}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 px-6 py-4 border-t bg-white shrink-0">
+              <button
+                type="button"
+                className="btn-outline"
+                onClick={closeStatusModal}
+                disabled={savingStatus}
+              >
+                Cancelar
+              </button>
+
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={handleUpdateGuideStatus}
+                disabled={savingStatus || !statusValue.trim()}
+              >
+                {savingStatus ? "Saving..." : "Actualizar estatus"}
+              </button>
             </div>
           </div>
         </div>

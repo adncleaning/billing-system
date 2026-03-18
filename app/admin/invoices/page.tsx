@@ -10,10 +10,37 @@ import Table from "@/components/Table";
 import Modal from "@/components/Modal";
 import { Plus, FileText, DollarSign, Calendar, Trash2 } from "lucide-react";
 
+interface ClientProfile {
+  entityType?: "PERSON" | "COMPANY" | string;
+  firstName?: string | null;
+  lastName?: string | null;
+  companyName?: string | null;
+  identification?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  mobile?: string | null;
+  addressLine?: string | null;
+  cityId?:
+    | {
+        postalCode?: string;
+        _id?: string;
+        label?: string;
+      }
+    | null;
+  cityLabel?: string | null;
+  zipCode?: string | null;
+  location?: any;
+  relationship?: string | null;
+}
+
 interface Client {
   _id: string;
-  name: string;
-  email: string;
+  agency?: string;
+  isActive?: boolean;
+  profile?: ClientProfile;
+  beneficiaries?: ClientProfile[];
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 interface InvoiceItem {
@@ -74,11 +101,32 @@ export default function InvoicesPage() {
     notes: "",
   });
 
+  const getClientDisplayName = (client?: Client | null) => {
+    if (!client?.profile) return "Unnamed client";
+
+    const { firstName, lastName, companyName, entityType } = client.profile;
+
+    if (entityType === "COMPANY" && companyName?.trim()) {
+      return companyName.trim();
+    }
+
+    const fullName = `${firstName || ""} ${lastName || ""}`.trim();
+
+    if (fullName) return fullName;
+    if (companyName?.trim()) return companyName.trim();
+
+    return "Unnamed client";
+  };
+
+  const getClientEmail = (client?: Client | null) => {
+    return client?.profile?.email || "";
+  };
+
   const fetchInvoices = async () => {
     try {
       const data: any = await Api("GET", "invoices", null, router);
       if (data.success) {
-        setInvoices(data.invoices);
+        setInvoices(data.invoices || []);
       }
     } catch (error) {
       showToast("Error loading invoices", "error");
@@ -91,7 +139,7 @@ export default function InvoicesPage() {
     try {
       const data: any = await Api("GET", "clients", null, router);
       if (data.success) {
-        setClients(data.clients);
+        setClients(data.clients || []);
       }
     } catch (error) {
       showToast("Error loading clients", "error");
@@ -256,8 +304,9 @@ export default function InvoicesPage() {
 
     return (
       <span
-        className={`px-2 py-1 text-xs font-medium rounded-full ${statusClasses[status as keyof typeof statusClasses]
-          }`}
+        className={`px-2 py-1 text-xs font-medium rounded-full ${
+          statusClasses[status as keyof typeof statusClasses]
+        }`}
       >
         {status.charAt(0).toUpperCase() + status.slice(1)}
       </span>
@@ -278,7 +327,7 @@ export default function InvoicesPage() {
     {
       key: "client",
       label: "Client",
-      render: (_: any, row: Invoice) => row.client.name,
+      render: (_: any, row: Invoice) => getClientDisplayName(row.client),
     },
     {
       key: "total",
@@ -364,7 +413,6 @@ export default function InvoicesPage() {
         />
       </div>
 
-      {/* Create Invoice Modal */}
       <Modal
         isOpen={showCreateModal}
         onClose={() => setShowCreateModal(false)}
@@ -372,7 +420,6 @@ export default function InvoicesPage() {
         size="xlarge"
       >
         <form onSubmit={handleSubmit} className="space-y-6">
-          {/* Client Selection */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
               Select Client *
@@ -388,13 +435,15 @@ export default function InvoicesPage() {
               <option value="">Choose a client...</option>
               {clients.map((client) => (
                 <option key={client._id} value={client._id}>
-                  {client.name} - {client.email}
+                  {getClientDisplayName(client)}
+                  {getClientEmail(client)
+                    ? ` - ${getClientEmail(client)}`
+                    : ""}
                 </option>
               ))}
             </select>
           </div>
 
-          {/* Invoice Items */}
           <div>
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-lg font-medium text-gray-900">
@@ -494,7 +543,6 @@ export default function InvoicesPage() {
             </div>
           </div>
 
-          {/* Invoice Totals */}
           <div className="bg-gray-50 p-4 rounded-lg">
             <div className="space-y-2">
               <div className="flex justify-between">
@@ -524,7 +572,6 @@ export default function InvoicesPage() {
             </div>
           </div>
 
-          {/* Due Date and Notes */}
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -570,7 +617,7 @@ export default function InvoicesPage() {
           </div>
         </form>
       </Modal>
-      {/* Generate Invoice PDF Modal */}
+
       <Modal
         isOpen={showPdfModal}
         onClose={() => setShowPdfModal(false)}
@@ -617,48 +664,6 @@ export default function InvoicesPage() {
                 />
                 <span className="text-sm">Shelter Style Invoice</span>
               </label>
-
-              {/* <label className="flex items-center space-x-2">
-                <input
-                  type="radio"
-                  value="barnardos"
-                  checked={pdfTemplate === "barnardos"}
-                  onChange={() => setPdfTemplate("barnardos")}
-                />
-                <span className="text-sm">Barnardo&apos;s Charity Receipt</span>
-              </label>
-
-              <label className="flex items-center space-x-2">
-                <input
-                  type="radio"
-                  value="shelter"
-                  checked={pdfTemplate === "shelter"}
-                  onChange={() => setPdfTemplate("shelter")}
-                />
-                <span className="text-sm">Shelter Charity Receipt</span>
-              </label>
-
-              <label className="flex items-center space-x-2">
-                <input
-                  type="radio"
-                  value="fight_for_sight"
-                  checked={pdfTemplate === "fight_for_sight"}
-                  onChange={() => setPdfTemplate("fight_for_sight")}
-                />
-                <span className="text-sm">Fight for Sight Charity Receipt</span>
-              </label>
-
-              <label className="flex items-center space-x-2">
-                <input
-                  type="radio"
-                  value="st_christophers"
-                  checked={pdfTemplate === "st_christophers"}
-                  onChange={() => setPdfTemplate("st_christophers")}
-                />
-                <span className="text-sm">
-                  St Christopher&apos;s Charity Receipt
-                </span>
-              </label> */}
             </div>
           </div>
 

@@ -104,13 +104,15 @@ type ServiceRow = {
 
 type PackageRow = {
   id: string;
+  invoiceId?: string | null;
   description: string;
-  value: number;   // “Valor”
-  length: number;  // L
-  width: number;   // W
-  height: number;  // H
-  weight: number;  // Wt (peso real)
-  pcs: number;     // Pcs
+  value: number;
+  length: number;
+  width: number;
+  height: number;
+  weight: number;
+  pcs: number;
+  items?: InvoiceItem[];
 };
 
 const VOLUMETRIC_DIVISOR = 5000; // 👈 ajustable: 5000 o 6000 según tu regla

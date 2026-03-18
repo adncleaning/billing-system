@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000/v1/api";
 
@@ -96,6 +96,19 @@ type GuideLite = {
   _id: string;
   number: string;
 
+  guideNumber?: number;
+
+  senderClient?: {
+    _id: string;
+    name?: string;
+    email?: string;
+    phone?: string;
+    identification?: string;
+    agency?: string;
+    beneficiaries?: Beneficiary[];
+    profile?: SenderClientProfile;
+  };
+
   // variantes de beneficiario en guía
   recipientName?: string;
   recipientSecondary?: string;
@@ -184,7 +197,7 @@ async function apiFetch(path: string, options: RequestInit = {}, router?: any) {
       try {
         localStorage.removeItem("token");
         localStorage.removeItem("user");
-      } catch {}
+      } catch { }
       router.push("/");
     }
 
@@ -192,7 +205,7 @@ async function apiFetch(path: string, options: RequestInit = {}, router?: any) {
     try {
       const err = await res.json();
       msg = err?.message || msg;
-    } catch {}
+    } catch { }
     throw new Error(msg);
   }
 
@@ -372,6 +385,9 @@ function Modal({
 /** -------------------- Page -------------------- */
 export default function BillsCreatePage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const guideIdFromQuery = searchParams.get("guideId") || "";
+  const [bootstrappingFromGuide, setBootstrappingFromGuide] = useState(false);
 
   /** Client selector */
   const [clientQ, setClientQ] = useState("");
@@ -493,6 +509,15 @@ export default function BillsCreatePage() {
       setLoadingGuides(false);
     }
   }
+  async function fetchGuideById(guideId: string) {
+    const data = await apiFetch(`/guides/${guideId}`, {}, router);
+    return (data?.guide || data?.data || null) as GuideLite | null;
+  }
+
+  async function fetchClientById(clientId: string) {
+    const data = await apiFetch(`/clients/${clientId}`, {}, router);
+    return (data?.client || data?.data || null) as ClientLite | null;
+  }
 
   /** -------------------- Effects -------------------- */
   useEffect(() => {
@@ -507,10 +532,15 @@ export default function BillsCreatePage() {
   }, [clientQ]);
 
   useEffect(() => {
+    if (bootstrappingFromGuide) return;
+
     setSelectedGuideIds([]);
     setUnbilledGuides([]);
-    setGuides([]);
     setSelectedInvoiceId(null);
+
+    setGuides([]);
+    setItems([]);
+    setServices([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedClient?._id]);
 
@@ -520,6 +550,64 @@ export default function BillsCreatePage() {
     fetchUnbilledGuides(selectedClient._id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openGuidesModal, selectedClient?._id]);
+
+  useEffect(() => {
+    if (!guideIdFromQuery) return;
+
+    (async () => {
+      try {
+        setBootstrappingFromGuide(true);
+        setError(null);
+
+        const guide = await fetchGuideById(guideIdFromQuery);
+        if (!guide?._id) {
+          setError("No se pudo cargar la guía seleccionada.");
+          return;
+        }
+
+        const senderClientId = guide?.senderClient?._id;
+        if (!senderClientId) {
+          setError("La guía no tiene remitente asociado.");
+          return;
+        }
+
+        const client = await fetchClientById(senderClientId);
+        if (!client?._id) {
+          setError("No se pudo cargar el cliente de la guía.");
+          return;
+        }
+
+        setSelectedClient(client);
+
+        const data = await apiFetch(
+          `/bills/unbilled-guides/list?clientId=${encodeURIComponent(senderClientId)}`,
+          {},
+          router
+        );
+
+        const list = (data?.data || data?.guides || []) as GuideLite[];
+        const safeList = Array.isArray(list) ? list : [];
+
+        setUnbilledGuides(safeList);
+
+        const currentGuide = safeList.find((g) => g._id === guide._id);
+
+        if (currentGuide) {
+          setSelectedGuideIds([currentGuide._id]);
+          mergeGuidesIntoBill([currentGuide]);
+        } else {
+          setError(
+            "La guía actual no está disponible para facturar. Puede que ya esté facturada."
+          );
+        }
+      } catch (e: any) {
+        setError(e?.message || "Error cargando guía para facturación.");
+      } finally {
+        setBootstrappingFromGuide(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [guideIdFromQuery]);
 
   /** -------------------- Handlers -------------------- */
   function addCatalogService(svc: ServiceCatalogItem) {
@@ -626,10 +714,9 @@ export default function BillsCreatePage() {
     );
   }
 
-  function includeSelectedGuides() {
-    const selected = unbilledGuides.filter((g) => selectedGuideIds.includes(g._id));
-
-    const firstInvoiceId = selected?.[0]?.invoiceId || selected?.[0]?.invoice?._id || null;
+  function mergeGuidesIntoBill(selected: GuideLite[]) {
+    const firstInvoiceId =
+      selected?.[0]?.invoiceId || selected?.[0]?.invoice?._id || null;
 
     if (selected.length) {
       const invoiceIds = selected
@@ -642,7 +729,7 @@ export default function BillsCreatePage() {
         setError(
           "Las guías seleccionadas pertenecen a más de una factura (invoice). Selecciona guías de una sola factura."
         );
-        return;
+        return false;
       }
 
       setSelectedInvoiceId(unique[0] || firstInvoiceId);
@@ -655,6 +742,15 @@ export default function BillsCreatePage() {
       selected.forEach((g) => map.set(g._id, g));
       return Array.from(map.values());
     });
+
+    return true;
+  }
+
+  function includeSelectedGuides() {
+    const selected = unbilledGuides.filter((g) => selectedGuideIds.includes(g._id));
+
+    const ok = mergeGuidesIntoBill(selected);
+    if (!ok) return;
 
     setSelectedGuideIds([]);
     setOpenGuidesModal(false);
@@ -863,9 +959,8 @@ export default function BillsCreatePage() {
                     return (
                       <li
                         key={c._id}
-                        className={`px-3 py-2 cursor-pointer border-b last:border-b-0 ${
-                          active ? "bg-sky-50" : "hover:bg-gray-50"
-                        }`}
+                        className={`px-3 py-2 cursor-pointer border-b last:border-b-0 ${active ? "bg-sky-50" : "hover:bg-gray-50"
+                          }`}
                         onClick={() => setSelectedClient(c)}
                       >
                         <div className="font-medium">{displayName}</div>
