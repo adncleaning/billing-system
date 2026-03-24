@@ -461,6 +461,76 @@ export default function ShowGuidePage() {
     );
   }
 
+  const openGuidePdf = async (shouldPrint = false) => {
+    try {
+      if (!guide?._id || !token) return;
+
+      const baseUrl =
+        process.env.NEXT_PUBLIC_API_URL ||
+        "https://api.adncleaningservices.co.uk/v1/api/";
+      const cleanBaseUrl = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+      const pdfUrl = `${cleanBaseUrl}guides/${guide._id}/pdf`;
+
+      const response = await fetch(pdfUrl, {
+        method: "GET",
+        headers: {
+          Authorization: `jwt ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error("Error generating guide PDF");
+      }
+
+      const blob = await response.blob();
+      const fileUrl = window.URL.createObjectURL(blob);
+
+      if (shouldPrint) {
+        const printWindow = window.open(fileUrl, "_blank");
+        if (printWindow) {
+          printWindow.onload = () => {
+            printWindow.focus();
+            printWindow.print();
+          };
+        }
+        return;
+      }
+
+      window.open(fileUrl, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  const openGuideLabelPdf = async () => {
+    try {
+      if (!guide?._id || !token) return;
+
+      const baseUrl =
+        process.env.NEXT_PUBLIC_API_URL ||
+        "https://api.adncleaningservices.co.uk/v1/api/";
+      const cleanBaseUrl = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+      const labelUrl = `${cleanBaseUrl}guides/${guide._id}/label`;
+
+      const response = await fetch(labelUrl, {
+        method: "GET",
+        headers: {
+          Authorization: `jwt ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error("Error generating guide label PDF");
+      }
+
+      const blob = await response.blob();
+      const fileUrl = window.URL.createObjectURL(blob);
+      window.open(fileUrl, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Header */}
@@ -552,7 +622,10 @@ export default function ShowGuidePage() {
               label="Etiquetas"
               items={[
                 { label: "Label_Ecuador" },
-                { label: "guideDefault" },
+                {
+                  label: "guideDefault",
+                  onClick: openGuideLabelPdf,
+                },
               ]}
             />
 
@@ -574,6 +647,7 @@ export default function ShowGuidePage() {
 
             <button
               type="button"
+              onClick={() => openGuidePdf(true)}
               className="border border-gray-300 p-2 hover:bg-gray-50"
               title="Print"
             >
@@ -582,6 +656,7 @@ export default function ShowGuidePage() {
 
             <button
               type="button"
+              onClick={() => openGuidePdf(false)}
               className="border border-gray-300 p-2 hover:bg-gray-50"
               title="PDF"
             >
