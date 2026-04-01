@@ -1002,6 +1002,7 @@ export default function CreateGuidePage() {
       <TariffSection
         tariffs={tariffs}
         loadingTariffs={loadingTariffs}
+        selectedCountry={invoiceDetailCountry}
         tariffId={tariffId}
         setTariffId={setTariffId}
         measureValue={measureValue}

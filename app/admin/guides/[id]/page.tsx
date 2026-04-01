@@ -423,6 +423,12 @@ export default function ShowGuidePage() {
     return [...guide.internalNotes].slice().reverse();
   }, [guide?.internalNotes]);
 
+  const [showCustomsPdfModal, setShowCustomsPdfModal] = useState(false);
+  const [customsPdfTemplate, setCustomsPdfTemplate] = useState<
+    "amazon" | "ebay" | "shelter_v2"
+  >("amazon");
+  const [generatingCustomsPdf, setGeneratingCustomsPdf] = useState(false);
+
   const statusOptions = [
     "CREATED",
     "PENDING",
@@ -501,6 +507,87 @@ export default function ShowGuidePage() {
       console.error(error);
     }
   };
+  const openGuideDeclarationPdf = async (shouldPrint = false) => {
+    try {
+      if (!guide?._id || !token) return;
+
+      const baseUrl =
+        process.env.NEXT_PUBLIC_API_URL ||
+        "https://api.adncleaningservices.co.uk/v1/api/";
+      const cleanBaseUrl = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+      const pdfUrl = `${cleanBaseUrl}guides/${guide._id}/pdf-declaration`;
+
+      const response = await fetch(pdfUrl, {
+        method: "GET",
+        headers: {
+          Authorization: `jwt ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error("Error generating declaration guide PDF");
+      }
+
+      const blob = await response.blob();
+      const fileUrl = window.URL.createObjectURL(blob);
+
+      if (shouldPrint) {
+        const printWindow = window.open(fileUrl, "_blank");
+        if (printWindow) {
+          printWindow.onload = () => {
+            printWindow.focus();
+            printWindow.print();
+          };
+        }
+        return;
+      }
+
+      window.open(fileUrl, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  const openGuideDeliveryNotePdf = async (shouldPrint = false) => {
+    try {
+      if (!guide?._id || !token) return;
+
+      const baseUrl =
+        process.env.NEXT_PUBLIC_API_URL ||
+        "https://api.adncleaningservices.co.uk/v1/api/";
+      const cleanBaseUrl = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+      const pdfUrl = `${cleanBaseUrl}guides/${guide._id}/pdf-delivery-note`;
+
+      const response = await fetch(pdfUrl, {
+        method: "GET",
+        headers: {
+          Authorization: `jwt ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error("Error generating delivery note PDF");
+      }
+
+      const blob = await response.blob();
+      const fileUrl = window.URL.createObjectURL(blob);
+
+      if (shouldPrint) {
+        const printWindow = window.open(fileUrl, "_blank");
+        if (printWindow) {
+          printWindow.onload = () => {
+            printWindow.focus();
+            printWindow.print();
+          };
+        }
+        return;
+      }
+
+      window.open(fileUrl, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      console.error(error);
+    }
+  };
 
   const openGuideLabelPdf = async () => {
     try {
@@ -528,6 +615,82 @@ export default function ShowGuidePage() {
       window.open(fileUrl, "_blank", "noopener,noreferrer");
     } catch (error) {
       console.error(error);
+    }
+  };
+  const openGuideLabelEcuadorPdf = async () => {
+    try {
+      if (!guide?._id || !token) return;
+
+      const baseUrl =
+        process.env.NEXT_PUBLIC_API_URL ||
+        "https://api.adncleaningservices.co.uk/v1/api/";
+      const cleanBaseUrl = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+      const labelUrl = `${cleanBaseUrl}guides/${guide._id}/label-ecuador`;
+
+      const response = await fetch(labelUrl, {
+        method: "GET",
+        headers: {
+          Authorization: `jwt ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error("Error generating Ecuador label PDF");
+      }
+
+      const blob = await response.blob();
+      const fileUrl = window.URL.createObjectURL(blob);
+      window.open(fileUrl, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  const handleGenerateCustomsPdf = async () => {
+    try {
+      if (!guide?._id || !token) return;
+
+      setGeneratingCustomsPdf(true);
+
+      const baseUrl =
+        process.env.NEXT_PUBLIC_API_URL ||
+        "https://api.adncleaningservices.co.uk/v1/api/";
+      const cleanBaseUrl = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+
+      const response = await fetch(
+        `${cleanBaseUrl}guides/${guide._id}/customs-pdf`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `jwt ${token}`,
+          },
+          body: JSON.stringify({
+            template: customsPdfTemplate,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error("Error generating customs PDF");
+      }
+
+      const blob = await response.blob();
+      const fileUrl = window.URL.createObjectURL(blob);
+
+      const link = document.createElement("a");
+      link.href = fileUrl;
+      link.download = `customs_invoice_${guide.number || guide._id}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+
+      window.URL.revokeObjectURL(fileUrl);
+      setShowCustomsPdfModal(false);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setGeneratingCustomsPdf(false);
     }
   };
 
@@ -621,10 +784,26 @@ export default function ShowGuidePage() {
             <ActionDropdown
               label="Etiquetas"
               items={[
-                { label: "Label_Ecuador" },
+                {
+                  label: "Label_Ecuador",
+                  onClick: openGuideLabelEcuadorPdf,
+                },
                 {
                   label: "guideDefault",
                   onClick: openGuideLabelPdf,
+                },
+              ]}
+            />
+
+            <ActionDropdown
+              label="Aduana"
+              items={[
+                {
+                  label: "Generar PDF",
+                  onClick: () => {
+                    setCustomsPdfTemplate("amazon");
+                    setShowCustomsPdfModal(true);
+                  },
                 },
               ]}
             />
@@ -665,14 +844,7 @@ export default function ShowGuidePage() {
 
             <button
               type="button"
-              className="border border-gray-300 p-2 hover:bg-gray-50"
-              title="Tag"
-            >
-              <Tag className="h-4 w-4 text-gray-700" />
-            </button>
-
-            <button
-              type="button"
+              onClick={() => openGuideDeclarationPdf(false)}
               className="border border-gray-300 p-2 hover:bg-gray-50"
               title="Check"
             >
@@ -681,6 +853,7 @@ export default function ShowGuidePage() {
 
             <button
               type="button"
+              onClick={() => openGuideDeliveryNotePdf(false)}
               className="border border-gray-300 p-2 hover:bg-gray-50"
               title="Barcode"
             >
@@ -1358,6 +1531,79 @@ export default function ShowGuidePage() {
                 disabled={savingStatus || !statusValue.trim()}
               >
                 {savingStatus ? "Saving..." : "Actualizar estatus"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {showCustomsPdfModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => {
+              if (!generatingCustomsPdf) setShowCustomsPdfModal(false);
+            }}
+          />
+
+          <div className="relative w-full max-w-lg rounded-xl bg-white shadow-lg">
+            <div className="border-b px-6 py-4">
+              <h3 className="text-xl font-semibold text-gray-900">
+                Generar PDF de Aduana
+              </h3>
+              <p className="mt-1 text-sm text-gray-500">
+                Selecciona el formato del documento aduanal para esta guía.
+              </p>
+            </div>
+
+            <div className="space-y-4 px-6 py-5">
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  value="amazon"
+                  checked={customsPdfTemplate === "amazon"}
+                  onChange={() => setCustomsPdfTemplate("amazon")}
+                />
+                <span className="text-sm">Amazon UK Invoice</span>
+              </label>
+
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  value="ebay"
+                  checked={customsPdfTemplate === "ebay"}
+                  onChange={() => setCustomsPdfTemplate("ebay")}
+                />
+                <span className="text-sm">eBay UK Invoice</span>
+              </label>
+
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  value="shelter_v2"
+                  checked={customsPdfTemplate === "shelter_v2"}
+                  onChange={() => setCustomsPdfTemplate("shelter_v2")}
+                />
+                <span className="text-sm">Shelter Style Invoice</span>
+              </label>
+            </div>
+
+            <div className="flex justify-end gap-3 border-t px-6 py-4">
+              <button
+                type="button"
+                onClick={() => setShowCustomsPdfModal(false)}
+                className="border border-gray-300 px-4 py-2 text-sm hover:bg-gray-50"
+                disabled={generatingCustomsPdf}
+              >
+                Cancelar
+              </button>
+
+              <button
+                type="button"
+                onClick={handleGenerateCustomsPdf}
+                className="bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
+                disabled={generatingCustomsPdf}
+              >
+                {generatingCustomsPdf ? "Generating..." : "Generate PDF"}
               </button>
             </div>
           </div>

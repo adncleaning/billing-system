@@ -1,11 +1,13 @@
 "use client";
 
-import type { Tariff } from "@/types/guide";
+import { useEffect, useMemo } from "react";
+import type { Tariff, InvoiceMode } from "@/types/guide";
 import { toNum } from "@/utils/guideHelpers";
 
 type Props = {
   tariffs: Tariff[];
   loadingTariffs: boolean;
+  selectedCountry: InvoiceMode | string;
   tariffId: string;
   setTariffId: (value: string) => void;
   measureValue: number;
@@ -31,6 +33,7 @@ type Props = {
 export default function TariffSection({
   tariffs,
   loadingTariffs,
+  selectedCountry,
   tariffId,
   setTariffId,
   measureValue,
@@ -52,6 +55,26 @@ export default function TariffSection({
   shippingPrice,
   shippingCost,
 }: Props) {
+  const filteredTariffs = useMemo(() => {
+    const country = String(selectedCountry || "").trim().toUpperCase();
+
+    if (!country) return tariffs;
+
+    return tariffs.filter(
+      (t) => String(t.country || "").trim().toUpperCase() === country
+    );
+  }, [tariffs, selectedCountry]);
+
+  useEffect(() => {
+    if (!tariffId) return;
+
+    const existsInFiltered = filteredTariffs.some((t) => t._id === tariffId);
+
+    if (!existsInFiltered) {
+      setTariffId("");
+    }
+  }, [filteredTariffs, tariffId, setTariffId]);
+
   return (
     <div className="card p-6">
       <h2 className="text-lg font-semibold text-gray-900 mb-4">Tarifa</h2>
@@ -65,8 +88,13 @@ export default function TariffSection({
             onChange={(e) => setTariffId(e.target.value)}
             disabled={loadingTariffs}
           >
-            <option value="">Choose tariff...</option>
-            {tariffs.map((t) => (
+            <option value="">
+              {selectedCountry
+                ? `Choose tariff for ${selectedCountry}...`
+                : "Choose tariff..."}
+            </option>
+
+            {filteredTariffs.map((t) => (
               <option key={t._id} value={t._id}>
                 {t.name} {t.country ? `(${t.country})` : ""}
               </option>
