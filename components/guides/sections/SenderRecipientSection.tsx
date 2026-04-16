@@ -1,6 +1,6 @@
 "use client";
 
-import { Plus, Search, Pencil } from "lucide-react";
+import { Plus, Search, Pencil, MapPin } from "lucide-react";
 import type { Client, PersonPayload } from "@/types/guide";
 import { displayClientLabel, displayPersonName } from "@/utils/guideHelpers";
 
@@ -21,6 +21,18 @@ type Props = {
   onOpenAddBeneficiary: () => void;
 };
 
+function renderAddress(person?: PersonPayload | null) {
+  if (!person) return "—";
+
+  const parts = [
+    (person.addressLine || "").trim(),
+    (person.cityLabel || "").trim(),
+    (person.zipCode || "").trim(),
+  ].filter(Boolean);
+
+  return parts.length ? parts.join(" ") : "—";
+}
+
 export default function SenderRecipientSection({
   senderSearch,
   setSenderSearch,
@@ -38,12 +50,12 @@ export default function SenderRecipientSection({
   onOpenAddBeneficiary,
 }: Props) {
   return (
-    <div className="grid grid-cols-2 gap-6">
+    <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
       <div className="card p-6">
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
           <h2 className="text-lg font-semibold text-gray-900">Remitente *</h2>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <button
               type="button"
               onClick={onOpenEditClient}
@@ -99,27 +111,30 @@ export default function SenderRecipientSection({
 
         {senderClient && (
           <div className="mt-4 text-sm text-gray-700 space-y-1">
-            <div className="font-medium">{displayPersonName(senderClient.profile)}</div>
+            <div className="font-medium text-base">
+              {displayPersonName(senderClient.profile)}
+            </div>
+
             {!!senderClient.profile.email && <div>{senderClient.profile.email}</div>}
             {!!senderClient.profile.phone && <div>{senderClient.profile.phone}</div>}
             {!!senderClient.profile.mobile && <div>{senderClient.profile.mobile}</div>}
             {!!senderClient.profile.identification && (
               <div>ID: {senderClient.profile.identification}</div>
             )}
-            <div className="text-gray-500">
-              {(senderClient.profile.addressLine || "").trim()}{" "}
-              {(senderClient.profile.cityLabel || "").trim()}{" "}
-              {(senderClient.profile.zipCode || "").trim()}
+
+            <div className="text-gray-500 flex items-start gap-2 pt-1">
+              <MapPin className="h-4 w-4 mt-0.5 shrink-0" />
+              <span>{renderAddress(senderClient.profile)}</span>
             </div>
           </div>
         )}
       </div>
 
       <div className="card p-6">
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
           <h2 className="text-lg font-semibold text-gray-900">Destinatario *</h2>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <button
               type="button"
               onClick={onOpenEditBeneficiary}
@@ -164,7 +179,9 @@ export default function SenderRecipientSection({
 
         {beneficiaryPreview ? (
           <div className="mt-4 text-sm text-gray-700 space-y-1">
-            <div className="font-medium">{displayPersonName(beneficiaryPreview)}</div>
+            <div className="font-medium text-base">
+              {displayPersonName(beneficiaryPreview)}
+            </div>
             {beneficiaryPreview.relationship && <div>{beneficiaryPreview.relationship}</div>}
             {beneficiaryPreview.phone && <div>{beneficiaryPreview.phone}</div>}
             {beneficiaryPreview.mobile && <div>{beneficiaryPreview.mobile}</div>}
@@ -172,15 +189,11 @@ export default function SenderRecipientSection({
             {beneficiaryPreview.identification && (
               <div>ID: {beneficiaryPreview.identification}</div>
             )}
-            {(beneficiaryPreview.addressLine ||
-              beneficiaryPreview.cityLabel ||
-              beneficiaryPreview.zipCode) && (
-              <div className="text-gray-500">
-                {(beneficiaryPreview.addressLine || "").trim()}{" "}
-                {(beneficiaryPreview.cityLabel || "").trim()}{" "}
-                {(beneficiaryPreview.zipCode || "").trim()}
-              </div>
-            )}
+
+            <div className="text-gray-500 flex items-start gap-2 pt-1">
+              <MapPin className="h-4 w-4 mt-0.5 shrink-0" />
+              <span>{renderAddress(beneficiaryPreview)}</span>
+            </div>
           </div>
         ) : (
           <div className="mt-4 text-sm text-gray-500">

@@ -8,7 +8,6 @@ import { useRouter } from "next/navigation";
 import Table from "@/components/Table";
 import Modal from "@/components/Modal";
 import {
-  Plus,
   DollarSign,
   FileText,
   Calendar,
@@ -54,20 +53,48 @@ const UK_DENOMS = [
 ];
 
 /** -------------------- Types -------------------- */
+interface ClientProfile {
+  entityType?: "PERSON" | "COMPANY" | string;
+  firstName?: string;
+  lastName?: string;
+  companyName?: string | null;
+  phone?: string;
+  mobile?: string;
+  email?: string;
+}
+
+interface BillClient {
+  _id?: string;
+  name?: string;
+  phone?: string;
+  mobile?: string;
+  email?: string;
+  profile?: ClientProfile;
+}
+
 interface Bill {
   _id: string;
   number?: string;
-  status: "PENDING" | "PARTIAL" | "PAID" | "CANCELLED";
+  invoiceNumber?: string;
+  status: "PENDING" | "PARTIAL" | "PAID" | "CANCELLED" | string;
   totals?: { total?: number; paid?: number; balance?: number };
-  client?: { name?: string; phone?: string };
+  client?: BillClient;
   createdAt?: string;
 }
 
 type PaymentMethod = "cash" | "card" | "transfer" | "check" | "other" | string;
 
+interface PaymentRef {
+  _id?: string;
+  number?: string;
+  invoiceNumber?: string;
+  client?: BillClient;
+}
+
 interface Payment {
   _id: string;
-  bill?: { _id?: string; number?: string; client?: { name?: string } };
+  bill?: PaymentRef | null;
+  invoice?: PaymentRef | null;
   amount: number;
   paymentMethod: PaymentMethod;
   paymentDetails: string;
@@ -103,6 +130,220 @@ interface CashClosure {
   driver?: { _id?: string; username?: string; name?: string };
 }
 
+type Expense = {
+  _id: string;
+  driver?: { _id: string; username?: string; name?: string } | string;
+  createdBy?: { _id: string; username?: string; name?: string } | string;
+  expenseDate?: string;
+  category: string;
+  amount: number;
+  paymentMethod?: "cash" | "card" | "transfer" | "other";
+  notes?: string;
+  createdAt?: string;
+};
+
+/** -------------------- Normalizers / helpers -------------------- */
+function toYMD(d = new Date()) {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function startOfDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function getClosureDateFromChoice(choice: "today" | "yesterday") {
+  const now = new Date();
+  if (choice === "yesterday") {
+    const y = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+    return startOfDay(y);
+  }
+  return startOfDay(now);
+}
+
+function toMoney(n: any) {
+  const v = Number(n || 0);
+  return Number.isFinite(v) ? v : 0;
+}
+
+function normalizeNearZero(n: number, epsilon = 0.01) {
+  return Math.abs(n) < epsilon ? 0 : n;
+}
+
+function diffStatus(diff: number) {
+  const abs = Math.abs(diff);
+  if (abs === 0) return { status: "OK" as const, cls: "bg-green-100 text-green-800", label: "OK" };
+  if (abs <= 1) return { status: "MINOR" as const, cls: "bg-yellow-100 text-yellow-800", label: "Minor" };
+  return { status: "MAJOR" as const, cls: "bg-red-100 text-red-800", label: "Major" };
+}
+
+function getPaymentMethodIcon(method: string) {
+  switch (method) {
+    case "cash":
+      return <Banknote className="h-4 w-4 text-green-600" />;
+    case "card":
+      return <CreditCard className="h-4 w-4 text-blue-600" />;
+    case "transfer":
+      return <Smartphone className="h-4 w-4 text-purple-600" />;
+    case "check":
+      return <FileText className="h-4 w-4 text-orange-600" />;
+    default:
+      return <DollarSign className="h-4 w-4 text-gray-600" />;
+  }
+}
+
+function prettyBreakdownKeys(bd: any): Record<string, number> {
+  if (!bd || typeof bd !== "object") return {};
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(bd)) {
+    const prettyKey = String(k).replace(/_/g, ".");
+    out[prettyKey] = Number(v || 0);
+  }
+  return out;
+}
+
+function getProfileFullName(profile?: ClientProfile | null) {
+  if (!profile) return "";
+  if (profile.entityType === "COMPANY") return profile.companyName?.trim() || "";
+  const fullName = [profile.firstName, profile.lastName].filter(Boolean).join(" ").trim();
+  return fullName;
+}
+
+function getBillDisplayNumber(bill?: Partial<Bill> | null) {
+  if (!bill) return "—";
+  return bill.number || bill.invoiceNumber || (bill._id ? bill._id.slice(-6) : "—");
+}
+
+function getBillClientName(bill?: Partial<Bill> | null) {
+  if (!bill?.client) return "—";
+
+  const directName = bill.client.name?.trim();
+  if (directName) return directName;
+
+  const profileName = getProfileFullName(bill.client.profile);
+  if (profileName) return profileName;
+
+  return "—";
+}
+
+function getBillClientPhone(bill?: Partial<Bill> | null) {
+  if (!bill?.client) return "—";
+
+  return (
+    bill.client.phone ||
+    bill.client.mobile ||
+    bill.client.profile?.phone ||
+    bill.client.profile?.mobile ||
+    "—"
+  );
+}
+
+function normalizeBill(raw: any): Bill {
+  const nestedClient = raw?.client || raw?.customer || raw?.user || null;
+
+  return {
+    _id: String(raw?._id || ""),
+    number: raw?.number || raw?.billNumber || raw?.code || undefined,
+    invoiceNumber: raw?.invoiceNumber || undefined,
+    status: raw?.status || "PENDING",
+    totals: {
+      total: Number(raw?.totals?.total ?? raw?.total ?? 0),
+      paid: Number(raw?.totals?.paid ?? raw?.paid ?? 0),
+      balance: normalizeNearZero(Number(raw?.totals?.balance ?? raw?.balance ?? 0)),
+    },
+    client: nestedClient
+      ? {
+          _id: nestedClient?._id,
+          name: nestedClient?.name,
+          phone: nestedClient?.phone,
+          mobile: nestedClient?.mobile,
+          email: nestedClient?.email,
+          profile: nestedClient?.profile
+            ? {
+                entityType: nestedClient.profile?.entityType,
+                firstName: nestedClient.profile?.firstName,
+                lastName: nestedClient.profile?.lastName,
+                companyName: nestedClient.profile?.companyName,
+                phone: nestedClient.profile?.phone,
+                mobile: nestedClient.profile?.mobile,
+                email: nestedClient.profile?.email,
+              }
+            : undefined,
+        }
+      : undefined,
+    createdAt: raw?.createdAt,
+  };
+}
+
+function normalizePaymentRef(raw: any): PaymentRef | null {
+  if (!raw) return null;
+
+  return {
+    _id: raw?._id,
+    number: raw?.number || raw?.billNumber || raw?.code,
+    invoiceNumber: raw?.invoiceNumber,
+    client: raw?.client
+      ? {
+          _id: raw.client?._id,
+          name: raw.client?.name,
+          phone: raw.client?.phone,
+          mobile: raw.client?.mobile,
+          email: raw.client?.email,
+          profile: raw.client?.profile
+            ? {
+                entityType: raw.client.profile?.entityType,
+                firstName: raw.client.profile?.firstName,
+                lastName: raw.client.profile?.lastName,
+                companyName: raw.client.profile?.companyName,
+                phone: raw.client.profile?.phone,
+                mobile: raw.client.profile?.mobile,
+                email: raw.client.profile?.email,
+              }
+            : undefined,
+        }
+      : undefined,
+  };
+}
+
+function normalizePayment(raw: any): Payment {
+  return {
+    _id: String(raw?._id || ""),
+    bill: normalizePaymentRef(raw?.bill),
+    invoice: normalizePaymentRef(raw?.invoice),
+    amount: Number(raw?.amount || 0),
+    paymentMethod: raw?.paymentMethod || "other",
+    paymentDetails: raw?.paymentDetails || "",
+    paymentDate: raw?.paymentDate || raw?.createdAt || "",
+    notes: raw?.notes || "",
+    cashClosure: raw?.cashClosure || null,
+  };
+}
+
+function getPaymentSource(payment: Payment): PaymentRef | null {
+  return payment.bill || payment.invoice || null;
+}
+
+function getPaymentSourceNumber(payment: Payment) {
+  const source = getPaymentSource(payment);
+  if (!source) return "—";
+  return source.number || source.invoiceNumber || (source._id ? source._id.slice(-6) : "—");
+}
+
+function getPaymentSourceClientName(payment: Payment) {
+  const source = getPaymentSource(payment);
+  if (!source?.client) return "—";
+
+  const directName = source.client.name?.trim();
+  if (directName) return directName;
+
+  const profileName = getProfileFullName(source.client.profile);
+  if (profileName) return profileName;
+
+  return "—";
+}
+
 export default function DriverPaymentsPage() {
   const { user, token } = useAuth();
   const { showToast } = useToast();
@@ -112,7 +353,6 @@ export default function DriverPaymentsPage() {
   const [payments, setPayments] = useState<Payment[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Record payment modal
   const [showRecordModal, setShowRecordModal] = useState(false);
   const [submittingPayment, setSubmittingPayment] = useState(false);
   const [formData, setFormData] = useState({
@@ -123,47 +363,28 @@ export default function DriverPaymentsPage() {
     notes: "",
   });
 
-  // Cash closures
   const [cashClosures, setCashClosures] = useState<CashClosure[]>([]);
   const [showClosureModal, setShowClosureModal] = useState(false);
   const [submittingClosure, setSubmittingClosure] = useState(false);
   const [closureNotes, setClosureNotes] = useState("");
   const [selectedPayments, setSelectedPayments] = useState<string[]>([]);
-
-  // Closure date (NEW): hoy o ayer
   const [closureDateChoice, setClosureDateChoice] = useState<"today" | "yesterday">("today");
 
-  // Cash breakdown counts
   const [cashCounts, setCashCounts] = useState<Record<string, number>>(() => {
     const init: Record<string, number> = {};
     UK_DENOMS.forEach((d) => (init[d.key] = 0));
     return init;
   });
 
-  // Details modal
   const [showClosureDetailsModal, setShowClosureDetailsModal] = useState(false);
   const [selectedClosure, setSelectedClosure] = useState<CashClosure | null>(null);
 
-  // Guard
   const [guardStatus, setGuardStatus] = useState<{
     allow: boolean;
     message?: string;
     requiredClosureDate?: string | null;
   } | null>(null);
   const [showGuardModal, setShowGuardModal] = useState(false);
-
-  // Expenses
-  type Expense = {
-    _id: string;
-    driver?: { _id: string; username?: string; name?: string } | string;
-    createdBy?: { _id: string; username?: string; name?: string } | string;
-    expenseDate?: string;
-    category: string;
-    amount: number;
-    paymentMethod?: "cash" | "card" | "transfer" | "other";
-    notes?: string;
-    createdAt?: string;
-  };
 
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [expensesTotal, setExpensesTotal] = useState<number>(0);
@@ -175,82 +396,24 @@ export default function DriverPaymentsPage() {
     notes: "",
   });
 
-  // Details modal expenses
   const [closureExpenses, setClosureExpenses] = useState<Expense[]>([]);
   const [closureExpensesTotal, setClosureExpensesTotal] = useState<number>(0);
 
-  // History filters (NEW)
   const [filterFrom, setFilterFrom] = useState<string>("");
   const [filterTo, setFilterTo] = useState<string>("");
   const [filterOnlyDiff, setFilterOnlyDiff] = useState<boolean>(false);
 
-  /** -------------------- Helpers -------------------- */
-  function toYMD(d = new Date()) {
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
-    return `${yyyy}-${mm}-${dd}`;
-  }
-
-  function startOfDay(date: Date) {
-    return new Date(date.getFullYear(), date.getMonth(), date.getDate());
-  }
-
-  function getClosureDateFromChoice(choice: "today" | "yesterday") {
-    const now = new Date();
-    if (choice === "yesterday") {
-      const y = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
-      return startOfDay(y);
-    }
-    return startOfDay(now);
-  }
-
-  function toMoney(n: any) {
-    const v = Number(n || 0);
-    return Number.isFinite(v) ? v : 0;
-  }
-
-  function diffStatus(diff: number) {
-    const abs = Math.abs(diff);
-    if (abs === 0) return { status: "OK" as const, cls: "bg-green-100 text-green-800", label: "OK" };
-    if (abs <= 1) return { status: "MINOR" as const, cls: "bg-yellow-100 text-yellow-800", label: "Minor" };
-    return { status: "MAJOR" as const, cls: "bg-red-100 text-red-800", label: "Major" };
-  }
-
-  const getPaymentMethodIcon = (method: string) => {
-    switch (method) {
-      case "cash":
-        return <Banknote className="h-4 w-4 text-green-600" />;
-      case "card":
-        return <CreditCard className="h-4 w-4 text-blue-600" />;
-      case "transfer":
-        return <Smartphone className="h-4 w-4 text-purple-600" />;
-      case "check":
-        return <FileText className="h-4 w-4 text-orange-600" />;
-      default:
-        return <DollarSign className="h-4 w-4 text-gray-600" />;
-    }
-  };
-
-  function prettyBreakdownKeys(bd: any): Record<string, number> {
-    if (!bd || typeof bd !== "object") return {};
-    const out: Record<string, number> = {};
-    for (const [k, v] of Object.entries(bd)) {
-      const prettyKey = String(k).replace(/_/g, ".");
-      out[prettyKey] = Number(v || 0);
-    }
-    return out;
-  }
-
-  /** -------------------- API fetch -------------------- */
   const fetchBills = async () => {
     try {
       const data: any = await Api("GET", "bills", null, router);
-      const list: Bill[] = data?.data || [];
-      const pending = (list || []).filter((b) => {
-        const balance = Number(b?.totals?.balance || 0);
+      const list = Array.isArray(data?.data) ? data.data : Array.isArray(data?.bills) ? data.bills : [];
+      const normalized: Bill[] = list.map(normalizeBill);
+
+      const pending = normalized.filter((b: Bill) => {
+        const balance = normalizeNearZero(Number(b?.totals?.balance || 0));
         return (b.status === "PENDING" || b.status === "PARTIAL") && balance > 0;
       });
+
       setBills(pending);
     } catch {
       showToast("Error loading bills", "error");
@@ -261,8 +424,12 @@ export default function DriverPaymentsPage() {
   const fetchPayments = async () => {
     try {
       const data: any = await Api("GET", `payments/driver/${user?.id}`, null, router);
-      if (data?.success) setPayments(data.payments || []);
-      else setPayments([]);
+      if (data?.success) {
+        const list = Array.isArray(data.payments) ? data.payments : [];
+        setPayments(list.map(normalizePayment));
+      } else {
+        setPayments([]);
+      }
     } catch {
       showToast("Error loading payments", "error");
       setPayments([]);
@@ -310,8 +477,6 @@ export default function DriverPaymentsPage() {
     try {
       if (!token || !user?.id) return;
 
-      // (NEW) filtro por fechas/diffs en frontend: traemos todo (como hoy),
-      // luego filtramos en UI. Si luego quieres, lo hacemos por query params en backend.
       const res = await fetch(`${API_URL}/cashClosure/driver/${user.id}`, {
         headers: { Authorization: `jwt ${token}` },
       });
@@ -320,6 +485,7 @@ export default function DriverPaymentsPage() {
         setCashClosures([]);
         return;
       }
+
       if (!res.ok) {
         showToast("Error loading cash closures", "error");
         setCashClosures([]);
@@ -327,8 +493,19 @@ export default function DriverPaymentsPage() {
       }
 
       const data: any = await safeJson(res);
-      if (data?.success) setCashClosures(data.closures || []);
-      else setCashClosures([]);
+
+      if (data?.success) {
+        const normalizedClosures = (data.closures || []).map((closure: any) => ({
+          ...closure,
+          payments: Array.isArray(closure?.payments)
+            ? closure.payments.map(normalizePayment)
+            : [],
+        }));
+
+        setCashClosures(normalizedClosures);
+      } else {
+        setCashClosures([]);
+      }
     } catch {
       showToast("Error loading cash closures", "error");
       setCashClosures([]);
@@ -367,7 +544,6 @@ export default function DriverPaymentsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** -------------------- Derived helpers -------------------- */
   const selectedBill = useMemo(
     () => bills.find((b) => b._id === formData.billId),
     [bills, formData.billId]
@@ -383,7 +559,6 @@ export default function DriverPaymentsPage() {
     [todayPayments]
   );
 
-  /** -------------------- Cash closure logic -------------------- */
   const closedPaymentIds = useMemo(() => {
     const set = new Set<string>();
     payments.forEach((p) => {
@@ -422,7 +597,6 @@ export default function DriverPaymentsPage() {
     );
   }, [availablePayments, selectedPayments]);
 
-  // Cash counted total from denoms
   const cashCountedTotal = useMemo(() => {
     const totalPence = UK_DENOMS.reduce((sum, d) => {
       const qty = Number(cashCounts[d.key] || 0);
@@ -475,7 +649,6 @@ export default function DriverPaymentsPage() {
     setCashCounts(init);
   };
 
-  /** -------------------- Submit: Record Payment -------------------- */
   const handleSubmitPayment = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmittingPayment(true);
@@ -506,7 +679,6 @@ export default function DriverPaymentsPage() {
     }
   };
 
-  /** -------------------- Submit: Create Cash Closure -------------------- */
   const handleSubmitClosure = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -515,13 +687,11 @@ export default function DriverPaymentsPage() {
       return;
     }
 
-    // Si hay cash esperado, exige conteo
     if (cashExpectedTotal > 0 && cashCountedTotal <= 0) {
       showToast("Please enter the cash count breakdown (notes/coins).", "error");
       return;
     }
 
-    // (NEW) si hay diferencia, exige notes para justificar
     if (cashDifference !== 0 && String(closureNotes || "").trim().length < 3) {
       showToast("Please add a note explaining the cash difference.", "error");
       return;
@@ -540,13 +710,11 @@ export default function DriverPaymentsPage() {
       const payload = {
         paymentIds: selectedPayments,
         notes: closureNotes,
-
-        closureDate, // ✅ NUEVO: permite cerrar “ayer” si aplica
-
+        closureDate,
         cashBreakdown: cashCounts,
         cashCountedTotal,
-        cashExpectedTotal, // igual se recalcula en backend, pero lo enviamos para consistencia
-        cashDifference, // igual se recalcula en backend
+        cashExpectedTotal,
+        cashDifference,
       };
 
       const res = await fetch(`${API_URL}/cashClosure`, {
@@ -625,7 +793,6 @@ export default function DriverPaymentsPage() {
     window.open(url, "_blank", "noopener,noreferrer");
   };
 
-  /** -------------------- History filters (NEW) -------------------- */
   const filteredClosures = useMemo(() => {
     let list = [...cashClosures];
 
@@ -653,7 +820,6 @@ export default function DriverPaymentsPage() {
     return list;
   }, [cashClosures, filterFrom, filterTo, filterOnlyDiff]);
 
-  /** -------------------- Columns -------------------- */
   const billColumns = [
     {
       key: "number",
@@ -661,7 +827,7 @@ export default function DriverPaymentsPage() {
       render: (_: any, row: Bill) => (
         <div className="flex items-center">
           <FileText className="h-4 w-4 text-gray-400 mr-2" />
-          <span className="font-medium">{row.number || row._id.slice(-6)}</span>
+          <span className="font-medium">{getBillDisplayNumber(row)}</span>
         </div>
       ),
     },
@@ -670,8 +836,8 @@ export default function DriverPaymentsPage() {
       label: "Client",
       render: (_: any, row: Bill) => (
         <div>
-          <div className="font-medium">{row.client?.name || "—"}</div>
-          <div className="text-sm text-gray-500">{row.client?.phone || "—"}</div>
+          <div className="font-medium">{getBillClientName(row)}</div>
+          <div className="text-sm text-gray-500">{getBillClientPhone(row)}</div>
         </div>
       ),
     },
@@ -679,11 +845,13 @@ export default function DriverPaymentsPage() {
       key: "balance",
       label: "Amount Due",
       render: (_: any, row: Bill) => {
-        const balance = Number(row.totals?.balance || 0);
+        const balance = normalizeNearZero(Number(row.totals?.balance || 0));
         return (
           <div className="flex items-center">
             <DollarSign className="h-4 w-4 text-gray-400 mr-1" />
-            <span className="font-medium text-red-600">£{balance.toFixed(2)}</span>
+            <span className={`font-medium ${balance > 0 ? "text-red-600" : "text-gray-500"}`}>
+              £{balance.toFixed(2)}
+            </span>
           </div>
         );
       },
@@ -702,7 +870,7 @@ export default function DriverPaymentsPage() {
       key: "actions",
       label: "Actions",
       render: (_: any, row: Bill) => {
-        const balance = Number(row.totals?.balance || 0);
+        const balance = normalizeNearZero(Number(row.totals?.balance || 0));
         return (
           <button
             onClick={() => {
@@ -710,6 +878,7 @@ export default function DriverPaymentsPage() {
               setShowRecordModal(true);
             }}
             className="btn-primary text-sm py-1 px-3"
+            disabled={balance <= 0}
           >
             Record Payment
           </button>
@@ -726,9 +895,9 @@ export default function DriverPaymentsPage() {
         <div>
           <div className="flex items-center">
             <FileText className="h-4 w-4 text-gray-400 mr-2" />
-            <span className="font-medium">{row.bill?.number || row.bill?._id?.slice(-6) || "—"}</span>
+            <span className="font-medium">{getPaymentSourceNumber(row)}</span>
           </div>
-          <div className="text-sm text-gray-500">{row.bill?.client?.name || "—"}</div>
+          <div className="text-sm text-gray-500">{getPaymentSourceClientName(row)}</div>
         </div>
       ),
     },
@@ -764,7 +933,6 @@ export default function DriverPaymentsPage() {
     },
   ];
 
-  // (NEW) closure columns include reconciliation info + badge
   const closureColumns = [
     {
       key: "date",
@@ -810,7 +978,11 @@ export default function DriverPaymentsPage() {
             </div>
             <div className="flex items-center justify-between gap-2">
               <span className="text-gray-600">Diff:</span>
-              <span className={`font-semibold ${diff === 0 ? "text-green-700" : diff > 0 ? "text-blue-700" : "text-red-700"}`}>
+              <span
+                className={`font-semibold ${
+                  diff === 0 ? "text-green-700" : diff > 0 ? "text-blue-700" : "text-red-700"
+                }`}
+              >
                 £{diff.toFixed(2)}
               </span>
             </div>
@@ -964,7 +1136,6 @@ export default function DriverPaymentsPage() {
         </div>
       </div>
 
-      {/* Summary */}
       <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
         <div className="card p-6">
           <div className="flex items-center justify-between">
@@ -1019,7 +1190,6 @@ export default function DriverPaymentsPage() {
         </div>
       </div>
 
-      {/* Pending Bills */}
       <div className="card p-6">
         <div className="flex justify-between items-center mb-6">
           <h2 className="text-lg font-semibold text-gray-900">Pending Bills</h2>
@@ -1031,17 +1201,20 @@ export default function DriverPaymentsPage() {
         <Table columns={billColumns} data={bills} loading={loading} emptyMessage="No pending bills found." />
       </div>
 
-      {/* Recent Payments */}
       <div className="card p-6">
         <div className="flex justify-between items-center mb-6">
           <h2 className="text-lg font-semibold text-gray-900">Recent Payments</h2>
           <span className="text-sm text-gray-500">{payments.length} payment(s) recorded</span>
         </div>
 
-        <Table columns={paymentColumns} data={payments.slice(0, 10)} loading={loading} emptyMessage="No payments recorded yet." />
+        <Table
+          columns={paymentColumns}
+          data={payments.slice(0, 10)}
+          loading={loading}
+          emptyMessage="No payments recorded yet."
+        />
       </div>
 
-      {/* Cash Closures History */}
       <div className="card p-6">
         <div className="flex justify-between items-center mb-4">
           <div>
@@ -1049,7 +1222,6 @@ export default function DriverPaymentsPage() {
             <span className="text-sm text-gray-500">{cashClosures.length} closure(s) created</span>
           </div>
 
-          {/* NEW FILTER BAR */}
           <div className="flex items-center gap-2">
             <div className="flex items-center gap-2 px-3 py-2 border rounded-lg bg-white">
               <Filter className="h-4 w-4 text-gray-500" />
@@ -1092,10 +1264,14 @@ export default function DriverPaymentsPage() {
           </div>
         </div>
 
-        <Table columns={closureColumns} data={filteredClosures} loading={loading} emptyMessage="No cash closures created yet." />
+        <Table
+          columns={closureColumns}
+          data={filteredClosures}
+          loading={loading}
+          emptyMessage="No cash closures created yet."
+        />
       </div>
 
-      {/* Expenses */}
       <div className="card p-6">
         <div className="flex justify-between items-center mb-6">
           <div>
@@ -1113,7 +1289,6 @@ export default function DriverPaymentsPage() {
         <Table columns={expenseColumns} data={expenses} loading={loading} emptyMessage="No expenses recorded today." />
       </div>
 
-      {/* Record Payment Modal */}
       <Modal isOpen={showRecordModal} onClose={() => setShowRecordModal(false)} title="Record Payment" size="large">
         <form onSubmit={(e) => void handleSubmitPayment(e)} className="space-y-6">
           <div>
@@ -1126,10 +1301,10 @@ export default function DriverPaymentsPage() {
             >
               <option value="">Choose a bill...</option>
               {bills.map((b) => {
-                const balance = Number(b.totals?.balance || 0);
+                const balance = normalizeNearZero(Number(b.totals?.balance || 0));
                 return (
                   <option key={b._id} value={b._id}>
-                    {(b.number || b._id.slice(-6))} - {b.client?.name || "—"} - £{balance.toFixed(2)}
+                    {getBillDisplayNumber(b)} - {getBillClientName(b)} - £{balance.toFixed(2)}
                   </option>
                 );
               })}
@@ -1142,11 +1317,13 @@ export default function DriverPaymentsPage() {
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div>
                   <span className="text-blue-700">Client:</span>
-                  <span className="ml-2 font-medium">{selectedBill.client?.name || "—"}</span>
+                  <span className="ml-2 font-medium">{getBillClientName(selectedBill)}</span>
                 </div>
                 <div>
                   <span className="text-blue-700">Balance:</span>
-                  <span className="ml-2 font-medium">£{Number(selectedBill.totals?.balance || 0).toFixed(2)}</span>
+                  <span className="ml-2 font-medium">
+                    £{normalizeNearZero(Number(selectedBill.totals?.balance || 0)).toFixed(2)}
+                  </span>
                 </div>
               </div>
             </div>
@@ -1218,10 +1395,8 @@ export default function DriverPaymentsPage() {
         </form>
       </Modal>
 
-      {/* Create Cash Closure Modal */}
       <Modal isOpen={showClosureModal} onClose={() => setShowClosureModal(false)} title="Create Cash Closure" size="xlarge">
         <form onSubmit={(e) => void handleSubmitClosure(e)} className="space-y-6">
-          {/* NEW: closure date choice */}
           <div className="bg-white border border-gray-200 rounded-lg p-4">
             <h3 className="text-lg font-medium text-gray-900 mb-2">Closure date</h3>
             <p className="text-sm text-gray-600 mb-3">
@@ -1277,7 +1452,6 @@ export default function DriverPaymentsPage() {
             </div>
           </div>
 
-          {/* CASH DENOMINATION BREAKDOWN */}
           <div className="bg-white border border-gray-200 rounded-lg p-4">
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-medium text-gray-900">Cash breakdown (UK denominations)</h3>
@@ -1291,7 +1465,6 @@ export default function DriverPaymentsPage() {
             </p>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-              {/* Notes */}
               <div className="border rounded-lg p-4">
                 <div className="flex items-center gap-2 mb-3">
                   <Banknote className="h-4 w-4 text-green-600" />
@@ -1327,7 +1500,6 @@ export default function DriverPaymentsPage() {
                 </div>
               </div>
 
-              {/* Coins */}
               <div className="border rounded-lg p-4">
                 <div className="flex items-center gap-2 mb-3">
                   <DollarSign className="h-4 w-4 text-gray-600" />
@@ -1364,7 +1536,6 @@ export default function DriverPaymentsPage() {
               </div>
             </div>
 
-            {/* Totals + diff + semaphore */}
             <div className="mt-4 grid grid-cols-1 md:grid-cols-5 gap-4">
               <div className="bg-gray-50 rounded-lg p-4">
                 <p className="text-sm text-gray-600">Cash Expected</p>
@@ -1410,7 +1581,6 @@ export default function DriverPaymentsPage() {
             ) : null}
           </div>
 
-          {/* Summary (all methods) */}
           {selectedPayments.length > 0 && (
             <div className="bg-gray-50 p-6 rounded-lg">
               <h3 className="text-lg font-medium text-gray-900 mb-4">Cash Closure Summary</h3>
@@ -1465,7 +1635,7 @@ export default function DriverPaymentsPage() {
               onChange={(e) => setClosureNotes(e.target.value)}
               className="input"
               rows={3}
-              placeholder={cashDifference !== 0 ? "Explain the cash difference..." : "Additional notes..."}
+              placeholder="Closure notes..."
             />
           </div>
 
@@ -1473,335 +1643,181 @@ export default function DriverPaymentsPage() {
             <button type="button" onClick={() => setShowClosureModal(false)} className="btn-outline">
               Cancel
             </button>
-            <button type="submit" disabled={submittingClosure || selectedPayments.length === 0} className="btn-primary">
+            <button type="submit" disabled={submittingClosure} className="btn-primary">
               {submittingClosure ? "Creating..." : "Create Cash Closure"}
             </button>
           </div>
         </form>
       </Modal>
 
-      {/* Closure Details Modal */}
-      <Modal
-        isOpen={showClosureDetailsModal}
-        onClose={() => {
-          setShowClosureDetailsModal(false);
-          setSelectedClosure(null);
-        }}
-        title="Cash Closure Details"
-        size="xlarge"
-      >
-        {selectedClosure ? (() => {
-          const bdPretty = prettyBreakdownKeys(selectedClosure.cashBreakdown);
-          const expected = toMoney(selectedClosure.cashExpectedTotal ?? selectedClosure.totalCash);
-          const counted = toMoney(selectedClosure.cashCountedTotal);
-          const diff = toMoney(selectedClosure.cashDifference ?? (counted - expected));
-          const meta = diffStatus(diff);
-
-          const lines = UK_DENOMS.map((d) => {
-            const qty = Number(bdPretty[d.key] || 0);
-            const lineTotal = (qty * d.pence) / 100;
-            return { ...d, qty, lineTotal };
-          }).filter((x) => x.qty > 0);
-
-          const notesLines = lines.filter((x) => x.type === "note");
-          const coinsLines = lines.filter((x) => x.type === "coin");
-
-          const netAfterExpenses = toMoney(selectedClosure.grandTotal) - toMoney(closureExpensesTotal);
-
-          return (
-            <div className="space-y-6">
-              <div className="bg-gray-50 rounded-lg p-4">
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                  <div>
-                    <p className="text-sm text-gray-600">Date</p>
-                    <p className="font-medium">
-                      {new Date(selectedClosure.closureDate || selectedClosure.createdAt || new Date()).toLocaleString()}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-600">Driver</p>
-                    <p className="font-medium">{selectedClosure?.driver?.username || "—"}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-600">Semáforo</p>
-                    <span className={`inline-flex px-2 py-1 rounded-full text-xs font-semibold ${meta.cls}`}>
-                      {meta.label}
-                    </span>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-600">Payments</p>
-                    <p className="font-medium">
-                      {(selectedClosure.paymentIds?.length || selectedClosure.payments?.length || 0)} payments
-                    </p>
-                  </div>
-                </div>
-
-                {selectedClosure.notes ? (
-                  <div className="mt-3 text-sm text-gray-700">
-                    <span className="font-medium">Notes:</span> {selectedClosure.notes}
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-                <div className="bg-white border rounded-lg p-4">
-                  <p className="text-sm text-gray-600">Cash (expected)</p>
-                  <p className="text-xl font-bold">£{toMoney(selectedClosure.totalCash).toFixed(2)}</p>
-                </div>
-                <div className="bg-white border rounded-lg p-4">
-                  <p className="text-sm text-gray-600">Card</p>
-                  <p className="text-xl font-bold">£{toMoney(selectedClosure.totalCard).toFixed(2)}</p>
-                </div>
-                <div className="bg-white border rounded-lg p-4">
-                  <p className="text-sm text-gray-600">Transfer</p>
-                  <p className="text-xl font-bold">£{toMoney(selectedClosure.totalTransfer).toFixed(2)}</p>
-                </div>
-                <div className="bg-white border rounded-lg p-4">
-                  <p className="text-sm text-gray-600">Other</p>
-                  <p className="text-xl font-bold">£{toMoney(selectedClosure.totalOther).toFixed(2)}</p>
-                </div>
-                <div className="bg-white border rounded-lg p-4">
-                  <p className="text-sm text-gray-600">Grand total</p>
-                  <p className="text-xl font-bold">£{toMoney(selectedClosure.grandTotal).toFixed(2)}</p>
-                </div>
-              </div>
-
-              <div className="bg-white border rounded-lg p-4">
-                <h3 className="text-lg font-medium text-gray-900 mb-3">Cash reconciliation</h3>
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                  <div className="bg-gray-50 rounded-lg p-4">
-                    <p className="text-sm text-gray-600">Cash expected</p>
-                    <p className="text-2xl font-bold">£{expected.toFixed(2)}</p>
-                  </div>
-                  <div className="bg-gray-50 rounded-lg p-4">
-                    <p className="text-sm text-gray-600">Cash counted</p>
-                    <p className="text-2xl font-bold">£{counted.toFixed(2)}</p>
-                  </div>
-                  <div className="bg-gray-50 rounded-lg p-4">
-                    <p className="text-sm text-gray-600">Difference</p>
-                    <p className={`text-2xl font-bold ${diff === 0 ? "text-green-600" : diff > 0 ? "text-blue-600" : "text-red-600"}`}>
-                      £{diff.toFixed(2)}
-                    </p>
-                  </div>
-                  <div className="bg-gray-50 rounded-lg p-4">
-                    <p className="text-sm text-gray-600">Absolute</p>
-                    <p className="text-2xl font-bold">£{Math.abs(diff).toFixed(2)}</p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Expenses summary (NEW) */}
-              <div className="bg-white border rounded-lg p-4">
-                <h3 className="text-lg font-medium text-gray-900 mb-3">Expenses (same day)</h3>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="bg-gray-50 rounded-lg p-4">
-                    <p className="text-sm text-gray-600">Expenses total</p>
-                    <p className="text-2xl font-bold">£{toMoney(closureExpensesTotal).toFixed(2)}</p>
-                  </div>
-                  <div className="bg-gray-50 rounded-lg p-4">
-                    <p className="text-sm text-gray-600">Net after expenses</p>
-                    <p className="text-2xl font-bold">£{toMoney(netAfterExpenses).toFixed(2)}</p>
-                  </div>
-                  <div className="bg-gray-50 rounded-lg p-4">
-                    <p className="text-sm text-gray-600">Payments total</p>
-                    <p className="text-2xl font-bold">£{toMoney(selectedClosure.grandTotal).toFixed(2)}</p>
-                  </div>
-                </div>
-
-                {closureExpenses.length === 0 ? (
-                  <p className="text-sm text-gray-600 mt-3">No expenses found for this day.</p>
-                ) : (
-                  <div className="mt-3 max-h-56 overflow-y-auto border rounded-lg">
-                    <table className="w-full text-sm">
-                      <thead className="text-left text-gray-600 bg-gray-50">
-                        <tr>
-                          <th className="py-2 px-3">Category</th>
-                          <th className="py-2 px-3">Method</th>
-                          <th className="py-2 px-3">Notes</th>
-                          <th className="py-2 px-3 text-right">Amount</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {closureExpenses.map((x) => (
-                          <tr key={x._id} className="border-t">
-                            <td className="py-2 px-3">{x.category}</td>
-                            <td className="py-2 px-3 capitalize">{x.paymentMethod || "cash"}</td>
-                            <td className="py-2 px-3">{x.notes || "—"}</td>
-                            <td className="py-2 px-3 text-right">£{toMoney(x.amount).toFixed(2)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-
-              {/* Denominations */}
-              <div className="bg-white border rounded-lg p-4">
-                <h3 className="text-lg font-medium text-gray-900 mb-3">Cash denominations</h3>
-
-                {lines.length === 0 ? (
-                  <p className="text-sm text-gray-600">No cash breakdown recorded for this closure.</p>
-                ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="border rounded-lg p-4">
-                      <h4 className="font-medium mb-3">Notes</h4>
-                      <div className="space-y-2">
-                        {notesLines.length === 0 ? (
-                          <p className="text-sm text-gray-600">No notes.</p>
-                        ) : (
-                          notesLines.map((x) => (
-                            <div key={x.key} className="flex items-center justify-between text-sm">
-                              <span className="font-medium">{x.label}</span>
-                              <span className="text-gray-700">x{x.qty}</span>
-                              <span className="font-medium">£{x.lineTotal.toFixed(2)}</span>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="border rounded-lg p-4">
-                      <h4 className="font-medium mb-3">Coins</h4>
-                      <div className="space-y-2">
-                        {coinsLines.length === 0 ? (
-                          <p className="text-sm text-gray-600">No coins.</p>
-                        ) : (
-                          coinsLines.map((x) => (
-                            <div key={x.key} className="flex items-center justify-between text-sm">
-                              <span className="font-medium">{x.label}</span>
-                              <span className="text-gray-700">x{x.qty}</span>
-                              <span className="font-medium">£{x.lineTotal.toFixed(2)}</span>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {lines.length > 0 ? (
-                  <div className="mt-4 pt-4 border-t text-right">
-                    <span className="text-sm text-gray-600 mr-2">Counted total:</span>
-                    <span className="text-lg font-bold">£{counted.toFixed(2)}</span>
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="flex justify-end gap-3 pt-2">
-                <button type="button" className="btn-outline" onClick={handlePrintClosurePdf}>
-                  Print / Export PDF
-                </button>
-                <button
-                  type="button"
-                  className="btn-primary"
-                  onClick={() => {
-                    setShowClosureDetailsModal(false);
-                    setSelectedClosure(null);
-                  }}
-                >
-                  Close
-                </button>
-              </div>
-            </div>
-          );
-        })() : null}
-      </Modal>
-
-      {/* Guard modal */}
-      <Modal isOpen={showGuardModal} onClose={() => setShowGuardModal(false)} title="Pending cash closure">
-        <p className="text-sm text-gray-700">
-          {guardStatus?.message || "You must complete yesterday’s cash closure before registering new payments."}
-        </p>
-
-        {guardStatus?.requiredClosureDate ? (
-          <p className="text-sm text-gray-600 mt-2">
-            Required closure date: <b>{new Date(guardStatus.requiredClosureDate).toLocaleDateString()}</b>
-          </p>
-        ) : null}
-
-        <div className="flex justify-end gap-3 mt-4">
-          <button className="btn-outline" onClick={() => setShowGuardModal(false)}>
-            Close
-          </button>
-          <button
-            className="btn-primary"
-            onClick={() => {
-              setShowGuardModal(false);
-              setShowClosureModal(true);
-              setClosureDateChoice("yesterday"); // ✅ sugerimos cerrar ayer si está bloqueado
-              resetCashCounts();
-            }}
-          >
-            Go to cash closure
-          </button>
-        </div>
-      </Modal>
-
-      {/* Expense modal */}
       <Modal isOpen={showExpenseModal} onClose={() => setShowExpenseModal(false)} title="Add Expense" size="large">
-        <form onSubmit={(e) => void handleSubmitExpense(e)} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Category *</label>
-            <input
-              className="input"
-              value={expenseForm.category}
-              onChange={(e) => setExpenseForm((p) => ({ ...p, category: e.target.value }))}
-              placeholder="Fuel, Parking, Supplies..."
-              required
-            />
-          </div>
-
+        <form onSubmit={(e) => void handleSubmitExpense(e)} className="space-y-6">
           <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Category *</label>
+              <input
+                type="text"
+                value={expenseForm.category}
+                onChange={(e) => setExpenseForm((p) => ({ ...p, category: e.target.value }))}
+                className="input"
+                required
+              />
+            </div>
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Amount *</label>
               <input
                 type="number"
                 min="0"
                 step="0.01"
-                className="input"
                 value={expenseForm.amount}
                 onChange={(e) => setExpenseForm((p) => ({ ...p, amount: e.target.value }))}
-                placeholder="0.00"
+                className="input"
                 required
               />
             </div>
+          </div>
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Payment method</label>
-              <select
-                className="input"
-                value={expenseForm.paymentMethod}
-                onChange={(e) => setExpenseForm((p) => ({ ...p, paymentMethod: e.target.value as any }))}
-              >
-                <option value="cash">Cash</option>
-                <option value="card">Card</option>
-                <option value="transfer">Transfer</option>
-                <option value="other">Other</option>
-              </select>
-            </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Payment Method *</label>
+            <select
+              value={expenseForm.paymentMethod}
+              onChange={(e) =>
+                setExpenseForm((p) => ({
+                  ...p,
+                  paymentMethod: e.target.value as "cash" | "card" | "transfer" | "other",
+                }))
+              }
+              className="input"
+            >
+              <option value="cash">Cash</option>
+              <option value="card">Card</option>
+              <option value="transfer">Transfer</option>
+              <option value="other">Other</option>
+            </select>
           </div>
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Notes</label>
             <textarea
-              className="input"
-              rows={3}
               value={expenseForm.notes}
               onChange={(e) => setExpenseForm((p) => ({ ...p, notes: e.target.value }))}
-              placeholder="Optional"
+              className="input"
+              rows={3}
             />
           </div>
 
-          <div className="flex justify-end gap-3 pt-2">
-            <button type="button" className="btn-outline" onClick={() => setShowExpenseModal(false)}>
+          <div className="flex justify-end space-x-4 pt-6 border-t border-gray-200">
+            <button type="button" onClick={() => setShowExpenseModal(false)} className="btn-outline">
               Cancel
             </button>
             <button type="submit" className="btn-primary">
-              Save expense
+              Save Expense
             </button>
           </div>
         </form>
+      </Modal>
+
+      <Modal
+        isOpen={showClosureDetailsModal}
+        onClose={() => setShowClosureDetailsModal(false)}
+        title="Cash Closure Details"
+        size="xlarge"
+      >
+        {selectedClosure ? (
+          <div className="space-y-6">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="bg-gray-50 rounded-lg p-4">
+                <p className="text-sm text-gray-600">Closure Date</p>
+                <p className="font-semibold">
+                  {selectedClosure.closureDate
+                    ? new Date(selectedClosure.closureDate).toLocaleDateString()
+                    : selectedClosure.createdAt
+                    ? new Date(selectedClosure.createdAt).toLocaleDateString()
+                    : "—"}
+                </p>
+              </div>
+
+              <div className="bg-gray-50 rounded-lg p-4">
+                <p className="text-sm text-gray-600">Grand Total</p>
+                <p className="font-semibold">£{toMoney(selectedClosure.grandTotal).toFixed(2)}</p>
+              </div>
+
+              <div className="bg-gray-50 rounded-lg p-4">
+                <p className="text-sm text-gray-600">Cash Difference</p>
+                <p className="font-semibold">£{toMoney(selectedClosure.cashDifference).toFixed(2)}</p>
+              </div>
+
+              <div className="bg-gray-50 rounded-lg p-4">
+                <p className="text-sm text-gray-600">Status</p>
+                <p className="font-semibold capitalize">{selectedClosure.status || "closed"}</p>
+              </div>
+            </div>
+
+            <div>
+              <h3 className="text-lg font-medium text-gray-900 mb-4">Payments in this closure</h3>
+              <Table
+                columns={paymentColumns}
+                data={selectedClosure.payments || []}
+                loading={false}
+                emptyMessage="No payments in this closure."
+              />
+            </div>
+
+            <div>
+              <h3 className="text-lg font-medium text-gray-900 mb-4">Cash breakdown</h3>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {Object.entries(prettyBreakdownKeys(selectedClosure.cashBreakdown || {})).map(([key, value]) => (
+                  <div key={key} className="border rounded-lg p-3 bg-gray-50">
+                    <p className="text-sm text-gray-600">{key}</p>
+                    <p className="font-semibold">{Number(value || 0)}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <h3 className="text-lg font-medium text-gray-900 mb-4">Expenses for that date</h3>
+              <p className="text-sm text-gray-500 mb-3">Total: £{closureExpensesTotal.toFixed(2)}</p>
+              <Table
+                columns={expenseColumns}
+                data={closureExpenses}
+                loading={false}
+                emptyMessage="No expenses recorded for that date."
+              />
+            </div>
+
+            <div className="flex justify-end space-x-4 pt-6 border-t border-gray-200">
+              <button type="button" onClick={() => setShowClosureDetailsModal(false)} className="btn-outline">
+                Close
+              </button>
+              <button type="button" onClick={handlePrintClosurePdf} className="btn-primary">
+                Print PDF
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+
+      <Modal isOpen={showGuardModal} onClose={() => setShowGuardModal(false)} title="Pending cash closure" size="large">
+        <div className="space-y-4">
+          <div className="p-4 rounded-lg bg-yellow-50 border border-yellow-200 text-yellow-900">
+            {guardStatus?.message || "You must complete the pending cash closure before recording new payments."}
+          </div>
+
+          {guardStatus?.requiredClosureDate && (
+            <p className="text-sm text-gray-600">
+              Required closure date:{" "}
+              <b>{new Date(guardStatus.requiredClosureDate).toLocaleDateString()}</b>
+            </p>
+          )}
+
+          <div className="flex justify-end pt-4 border-t border-gray-200">
+            <button type="button" onClick={() => setShowGuardModal(false)} className="btn-outline">
+              Close
+            </button>
+          </div>
+        </div>
       </Modal>
     </div>
   );

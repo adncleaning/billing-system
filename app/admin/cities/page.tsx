@@ -2,18 +2,29 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, Pencil, Search, MapPin, Hash } from "lucide-react";
+import {
+  Plus,
+  Pencil,
+  Search,
+  MapPin,
+  Hash,
+  Globe,
+  Building2,
+  Upload,
+} from "lucide-react";
 
 import Table from "@/components/Table";
 import Modal from "@/components/Modal";
 import { Api } from "@/contexts/AuthContext";
 import { useToast } from "@/contexts/ToastContext";
 
-// ---------------- Types ----------------
 type CityItem = {
   _id: string;
-  label: string; // "CIUDAD (DEP)"
-  postalCode?: string | number | null;
+  label: string;
+  country: string;
+  department: string;
+  city: string;
+  postalCode?: string | null;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -24,37 +35,36 @@ type Column = {
   render?: (_: any, row: any) => React.ReactNode;
 };
 
-// ---------------- Helpers ----------------
-function normalizeLabel(city: string, dept: string) {
-  const c = (city || "").trim();
-  const d = (dept || "").trim();
-  if (!c) return "";
-  if (!d) return c;
-  return `${c} (${d})`;
-}
-
-// Parse "ACACIAS (Meta)" => { city:"ACACIAS", dept:"Meta" }
-function parseLabel(label: string) {
-  const s = (label || "").trim();
-  const match = s.match(/^(.+?)\s*\((.+)\)\s*$/);
-  if (match) return { city: match[1].trim(), dept: match[2].trim() };
-  return { city: s, dept: "" };
-}
+const COUNTRY_OPTIONS = [
+  "Colombia",
+  "Ecuador",
+  "Venezuela",
+  "España",
+  "Reino Unido",
+];
 
 function postalToString(v: any) {
   if (v === null || v === undefined) return "";
-  const n = Number(v);
-  if (Number.isFinite(n)) return String(Math.trunc(n));
-  return String(v);
+  return String(v).trim();
+}
+
+function buildLabel(city: string, department: string, country: string) {
+  const c = (city || "").trim();
+  const d = (department || "").trim();
+  const p = (country || "").trim();
+
+  if (c && d && p) return `${c} (${d}, ${p})`;
+  if (c && d) return `${c} (${d})`;
+  if (c && p) return `${c} (${p})`;
+  return c;
 }
 
 export default function CitiesPage() {
   const router = useRouter();
-
-  // ✅ tu toast context
   const { showToast } = useToast();
 
   const [loading, setLoading] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   const [rows, setRows] = useState<CityItem[]>([]);
   const [search, setSearch] = useState("");
@@ -63,12 +73,12 @@ export default function CitiesPage() {
   const [editing, setEditing] = useState<CityItem | null>(null);
 
   const [form, setForm] = useState({
+    country: "Colombia",
+    department: "",
     city: "",
-    dept: "",
     postalCode: "",
   });
 
-  // ---------------- API ----------------
   const fetchCities = async () => {
     try {
       setLoading(true);
@@ -83,7 +93,7 @@ export default function CitiesPage() {
       else setRows([]);
     } catch (err) {
       console.error(err);
-      showToast("Error loading cities", "error");
+      showToast("Error loading locations", "error");
       setRows([]);
     } finally {
       setLoading(false);
@@ -91,9 +101,8 @@ export default function CitiesPage() {
   };
 
   const createCity = async () => {
-    const label = normalizeLabel(form.city, form.dept);
-    if (!label) {
-      showToast("City is required", "error");
+    if (!form.country || !form.department.trim() || !form.city.trim()) {
+      showToast("Country, department and city are required", "error");
       return;
     }
 
@@ -101,26 +110,33 @@ export default function CitiesPage() {
       setLoading(true);
 
       const payload = {
-        label,
+        country: form.country,
+        department: form.department.trim(),
+        city: form.city.trim(),
         postalCode: form.postalCode ? form.postalCode.trim() : null,
       };
 
       const data: any = await Api("POST", "cities", payload, router);
 
       if (!data?.success) {
-        showToast(data?.message || "Error creating city", "error");
+        showToast(data?.message || "Error creating location", "error");
         return;
       }
 
-      showToast("City created", "success");
+      showToast("Location created", "success");
       setShowModal(false);
       setEditing(null);
-      setForm({ city: "", dept: "", postalCode: "" });
+      setForm({
+        country: "Colombia",
+        department: "",
+        city: "",
+        postalCode: "",
+      });
 
       await fetchCities();
     } catch (err) {
       console.error(err);
-      showToast("Error creating city", "error");
+      showToast("Error creating location", "error");
     } finally {
       setLoading(false);
     }
@@ -129,9 +145,8 @@ export default function CitiesPage() {
   const updateCity = async () => {
     if (!editing?._id) return;
 
-    const label = normalizeLabel(form.city, form.dept);
-    if (!label) {
-      showToast("City is required", "error");
+    if (!form.country || !form.department.trim() || !form.city.trim()) {
+      showToast("Country, department and city are required", "error");
       return;
     }
 
@@ -139,44 +154,99 @@ export default function CitiesPage() {
       setLoading(true);
 
       const payload = {
-        label,
+        country: form.country,
+        department: form.department.trim(),
+        city: form.city.trim(),
         postalCode: form.postalCode ? form.postalCode.trim() : null,
       };
 
       const data: any = await Api("PUT", `cities/${editing._id}`, payload, router);
 
       if (!data?.success) {
-        showToast(data?.message || "Error updating city", "error");
+        showToast(data?.message || "Error updating location", "error");
         return;
       }
 
-      showToast("City updated", "success");
+      showToast("Location updated", "success");
       setShowModal(false);
       setEditing(null);
-      setForm({ city: "", dept: "", postalCode: "" });
+      setForm({
+        country: "Colombia",
+        department: "",
+        city: "",
+        postalCode: "",
+      });
 
       await fetchCities();
     } catch (err) {
       console.error(err);
-      showToast("Error updating city", "error");
+      showToast("Error updating location", "error");
     } finally {
       setLoading(false);
     }
   };
 
-  // ---------------- UI events ----------------
+  const importExcel = async (file: File) => {
+    try {
+      setImporting(true);
+
+      const token =
+        typeof window !== "undefined" ? localStorage.getItem("token") : null;
+
+      const baseUrl =
+        process.env.NEXT_PUBLIC_API_URL ||
+        "https://api.adncleaningservices.co.uk/v1/api/";
+
+      const cleanBaseUrl = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch(`${cleanBaseUrl}cities/import`, {
+        method: "POST",
+        headers: {
+          Authorization: `jwt ${token}`,
+        },
+        body: formData,
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data?.success) {
+        throw new Error(data?.message || "Import failed");
+      }
+
+      const summary = data?.summary || {};
+      showToast(
+        `Import completed. Processed: ${summary.processed || 0}, errors: ${summary.errors || 0}`,
+        "success"
+      );
+
+      await fetchCities();
+    } catch (err: any) {
+      console.error(err);
+      showToast(err?.message || "Error importing Excel", "error");
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const openCreate = () => {
     setEditing(null);
-    setForm({ city: "", dept: "", postalCode: "" });
+    setForm({
+      country: "Colombia",
+      department: "",
+      city: "",
+      postalCode: "",
+    });
     setShowModal(true);
   };
 
   const openEdit = (row: CityItem) => {
-    const { city, dept } = parseLabel(row.label || "");
     setEditing(row);
     setForm({
-      city,
-      dept,
+      country: row.country || "Colombia",
+      department: row.department || "",
+      city: row.city || "",
       postalCode: postalToString(row.postalCode),
     });
     setShowModal(true);
@@ -188,31 +258,46 @@ export default function CitiesPage() {
     else await createCity();
   };
 
-  // ---------------- Effects ----------------
   useEffect(() => {
     fetchCities();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // búsqueda “live” con debounce
   useEffect(() => {
     const t = setTimeout(() => {
       fetchCities();
     }, 350);
     return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
-  // ---------------- Columns ----------------
   const columns: Column[] = useMemo(
     () => [
       {
-        key: "label",
-        label: "City (Department)",
+        key: "country",
+        label: "Country",
+        render: (_: any, row: CityItem) => (
+          <div className="flex items-center gap-2">
+            <Globe className="h-4 w-4 text-gray-400" />
+            <span>{row.country || "—"}</span>
+          </div>
+        ),
+      },
+      {
+        key: "department",
+        label: "Department",
+        render: (_: any, row: CityItem) => (
+          <div className="flex items-center gap-2">
+            <Building2 className="h-4 w-4 text-gray-400" />
+            <span>{row.department || "—"}</span>
+          </div>
+        ),
+      },
+      {
+        key: "city",
+        label: "City",
         render: (_: any, row: CityItem) => (
           <div className="flex items-center gap-2">
             <MapPin className="h-4 w-4 text-gray-400" />
-            <span className="font-medium">{row.label || "—"}</span>
+            <span className="font-medium">{row.city || "—"}</span>
           </div>
         ),
       },
@@ -243,34 +328,66 @@ export default function CitiesPage() {
         ),
       },
     ],
-    // openEdit es estable aquí porque no depende de nada externo
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     []
   );
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return rows;
-    return rows.filter((r) => (r.label || "").toLowerCase().includes(q));
+
+    return rows.filter((r) =>
+      [
+        r.label,
+        r.country,
+        r.department,
+        r.city,
+        r.postalCode,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(q)
+    );
   }, [rows, search]);
 
-  // ---------------- Render ----------------
   return (
     <div className="p-6 space-y-6">
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold text-gray-900">Cities & Postcodes</h1>
+          <h1 className="text-xl font-semibold text-gray-900">
+            Countries, Departments, Cities & Postcodes
+          </h1>
           <p className="text-sm text-gray-500">
-            Manage city list and postcodes (format: <b>City (Department)</b>)
+            Manage locations by country, department, city and postcode.
           </p>
         </div>
 
-        <button className="btn-primary" onClick={openCreate}>
-          <span className="inline-flex items-center gap-2">
-            <Plus className="h-4 w-4" />
-            Add city
-          </span>
-        </button>
+        <div className="flex flex-wrap gap-3">
+          <label className="btn-outline cursor-pointer">
+            <span className="inline-flex items-center gap-2">
+              <Upload className="h-4 w-4" />
+              {importing ? "Importing..." : "Import Excel"}
+            </span>
+            <input
+              type="file"
+              accept=".xlsx,.xls"
+              className="hidden"
+              disabled={importing}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) importExcel(file);
+                e.currentTarget.value = "";
+              }}
+            />
+          </label>
+
+          <button className="btn-primary" onClick={openCreate}>
+            <span className="inline-flex items-center gap-2">
+              <Plus className="h-4 w-4" />
+              Add location
+            </span>
+          </button>
+        </div>
       </div>
 
       <div className="card p-6">
@@ -279,7 +396,7 @@ export default function CitiesPage() {
             <Search className="h-4 w-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               className="input pl-9"
-              placeholder="Search city or department..."
+              placeholder="Search country, department, city or postcode..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
@@ -290,54 +407,92 @@ export default function CitiesPage() {
           </div>
         </div>
 
-        <Table columns={columns} data={filtered} loading={loading} emptyMessage="No cities found." />
+        <Table
+          columns={columns}
+          data={filtered}
+          loading={loading}
+          emptyMessage="No locations found."
+        />
       </div>
 
       <Modal
         isOpen={showModal}
         onClose={() => setShowModal(false)}
-        title={editing ? "Edit city" : "Add city"}
+        title={editing ? "Edit location" : "Add location"}
         size="large"
       >
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">City *</label>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Country *
+              </label>
+              <select
+                className="input"
+                value={form.country}
+                onChange={(e) => setForm((p) => ({ ...p, country: e.target.value }))}
+                required
+              >
+                {COUNTRY_OPTIONS.map((country) => (
+                  <option key={country} value={country}>
+                    {country}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Department *
+              </label>
               <input
                 className="input"
-                value={form.city}
-                onChange={(e) => setForm((p) => ({ ...p, city: e.target.value }))}
-                placeholder="e.g. ACACIAS"
+                value={form.department}
+                onChange={(e) => setForm((p) => ({ ...p, department: e.target.value }))}
+                placeholder="e.g. Meta / Pichincha / Miranda / Madrid / England"
                 required
               />
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Department (optional)</label>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                City *
+              </label>
               <input
                 className="input"
-                value={form.dept}
-                onChange={(e) => setForm((p) => ({ ...p, dept: e.target.value }))}
-                placeholder="e.g. Meta / ANT / N/STDER"
+                value={form.city}
+                onChange={(e) => setForm((p) => ({ ...p, city: e.target.value }))}
+                placeholder="e.g. Acacías"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Postcode
+              </label>
+              <input
+                className="input"
+                value={form.postalCode}
+                onChange={(e) => setForm((p) => ({ ...p, postalCode: e.target.value }))}
+                placeholder="e.g. 507001 / SW1A 1AA"
               />
             </div>
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Postcode (optional)</label>
-            <input
-              className="input"
-              value={form.postalCode}
-              onChange={(e) => setForm((p) => ({ ...p, postalCode: e.target.value }))}
-              placeholder="e.g. 507001"
-            />
             <p className="text-xs text-gray-500 mt-2">
-              Saved as: <b>{normalizeLabel(form.city, form.dept) || "—"}</b>
+              Saved as:{" "}
+              <b>{buildLabel(form.city, form.department, form.country) || "—"}</b>
             </p>
           </div>
 
           <div className="flex justify-end gap-3 pt-2">
-            <button type="button" className="btn-outline" onClick={() => setShowModal(false)}>
+            <button
+              type="button"
+              className="btn-outline"
+              onClick={() => setShowModal(false)}
+            >
               Cancel
             </button>
             <button type="submit" className="btn-primary" disabled={loading}>

@@ -31,7 +31,6 @@ import {
   applyCitySelection,
   displayPersonName,
   emptyBeneficiary,
-  emptyNewCityForm,
   emptyPerson,
   isPersonNameValid,
   normalizeClient,
@@ -41,10 +40,36 @@ import {
 } from "@/utils/guideHelpers";
 
 type NewCityForm = {
-  label: string;
   country: string;
+  department: string;
+  city: string;
   postalCode: string;
 };
+
+type LocationSelection = {
+  country: string;
+  department: string;
+};
+
+const COUNTRY_OPTIONS = [
+  { name: "Colombia", flag: "🇨🇴", dialCode: "+57" },
+  { name: "Ecuador", flag: "🇪🇨", dialCode: "+593" },
+  { name: "Venezuela", flag: "🇻🇪", dialCode: "+58" },
+  { name: "España", flag: "🇪🇸", dialCode: "+34" },
+  { name: "Reino Unido", flag: "🇬🇧", dialCode: "+44" },
+];
+
+const emptyNewCityForm = (): NewCityForm => ({
+  country: "",
+  department: "",
+  city: "",
+  postalCode: "",
+});
+
+const emptyLocationSelection = (): LocationSelection => ({
+  country: "",
+  department: "",
+});
 
 const emptyPackage = (): PackageRow => ({
   id: crypto.randomUUID(),
@@ -185,11 +210,68 @@ export default function CreateGuidePage() {
   const [editBeneficiaryCityForm, setEditBeneficiaryCityForm] =
     useState<NewCityForm>(emptyNewCityForm());
 
+  const [createClientLocation, setCreateClientLocation] =
+    useState<LocationSelection>(emptyLocationSelection());
+  const [createBeneficiaryLocation, setCreateBeneficiaryLocation] =
+    useState<LocationSelection>(emptyLocationSelection());
+  const [editClientLocation, setEditClientLocation] =
+    useState<LocationSelection>(emptyLocationSelection());
+  const [editBeneficiaryLocation, setEditBeneficiaryLocation] =
+    useState<LocationSelection>(emptyLocationSelection());
+
   const cityById = useMemo(() => {
     const map = new Map<string, City>();
     for (const c of cities) map.set(c._id, c);
     return map;
   }, [cities]);
+
+  const departmentsByCountry = useMemo(() => {
+    const grouped = new Map<string, string[]>();
+
+    for (const city of cities) {
+      const country = city.country || "";
+      const department = city.department || "";
+      if (!country || !department) continue;
+
+      const current = grouped.get(country) || [];
+      if (!current.includes(department)) current.push(department);
+      grouped.set(
+        country,
+        [...current].sort((a, b) => a.localeCompare(b))
+      );
+    }
+
+    return grouped;
+  }, [cities]);
+
+  const getDepartmentsByCountry = (country: string) => {
+    return departmentsByCountry.get(country) || [];
+  };
+
+  const getCitiesByCountryAndDepartment = (
+    country: string,
+    department: string
+  ) => {
+    if (!country || !department) return [];
+    return cities
+      .filter(
+        (city) => city.country === country && city.department === department
+      )
+      .sort((a, b) => a.city.localeCompare(b.city));
+  };
+
+  const getLocationSelectionFromCityId = (
+    cityId?: string | null
+  ): LocationSelection => {
+    if (!cityId) return emptyLocationSelection();
+    const city = cityById.get(cityId);
+    if (!city) return emptyLocationSelection();
+
+    return {
+      country: city.country || "",
+      department: city.department || "",
+    };
+  };
 
   const packagesDeclaredValue = useMemo(() => {
     return Number(
@@ -279,8 +361,9 @@ export default function CreateGuidePage() {
   };
 
   const validateNewCityForm = (form: NewCityForm) => {
-    if (!form.label.trim()) return "City name is required";
     if (!form.country.trim()) return "Country is required";
+    if (!form.department.trim()) return "Department is required";
+    if (!form.city.trim()) return "City is required";
     return null;
   };
 
@@ -294,8 +377,9 @@ export default function CreateGuidePage() {
     setSavingNewCity(true);
     try {
       const payload = {
-        label: form.label.trim(),
         country: form.country.trim(),
+        department: form.department.trim(),
+        city: form.city.trim(),
         postalCode: form.postalCode.trim() || null,
       };
 
@@ -368,7 +452,8 @@ export default function CreateGuidePage() {
         ]);
 
         if (clientRes?.success) {
-          setSenderClient(normalizeClient(clientRes.client));
+          const normalizedClient = normalizeClient(clientRes.client);
+          setSenderClient(normalizedClient);
           setBeneficiaryIndex(0);
         }
 
@@ -464,6 +549,10 @@ export default function CreateGuidePage() {
       profile: { ...emptyPerson(), ...(senderClient.profile || {}) },
     });
 
+    setEditClientLocation(
+      getLocationSelectionFromCityId(senderClient.profile?.cityId)
+    );
+
     setShowEditClientModal(true);
   };
 
@@ -483,6 +572,10 @@ export default function CreateGuidePage() {
       ...beneficiaryPreview,
     });
 
+    setEditBeneficiaryLocation(
+      getLocationSelectionFromCityId(beneficiaryPreview.cityId)
+    );
+
     setShowEditBeneficiaryModal(true);
   };
 
@@ -499,8 +592,6 @@ export default function CreateGuidePage() {
         if (!createdCity) return;
 
         profile = applyCitySelection(profile, createdCity._id, cityById);
-        profile.cityLabel = createdCity.label;
-        profile.zipCode = createdCity.postalCode || "";
       }
 
       if (addBeneficiaryNow && createBeneficiaryNewCity) {
@@ -508,8 +599,6 @@ export default function CreateGuidePage() {
         if (!createdCity) return;
 
         beneficiary = applyCitySelection(beneficiary, createdCity._id, cityById);
-        beneficiary.cityLabel = createdCity.label;
-        beneficiary.zipCode = createdCity.postalCode || "";
       }
 
       if (!isPersonNameValid(profile)) {
@@ -554,6 +643,8 @@ export default function CreateGuidePage() {
       setCreateBeneficiaryNewCity(false);
       setCreateClientCityForm(emptyNewCityForm());
       setCreateBeneficiaryCityForm(emptyNewCityForm());
+      setCreateClientLocation(emptyLocationSelection());
+      setCreateBeneficiaryLocation(emptyLocationSelection());
 
       setClientForm({
         agency: "Via logistics",
@@ -582,8 +673,6 @@ export default function CreateGuidePage() {
         if (!createdCity) return;
 
         profile = applyCitySelection(profile, createdCity._id, cityById);
-        profile.cityLabel = createdCity.label;
-        profile.zipCode = createdCity.postalCode || "";
       }
 
       const payload = {
@@ -619,6 +708,7 @@ export default function CreateGuidePage() {
 
       setEditClientNewCity(false);
       setEditClientCityForm(emptyNewCityForm());
+      setEditClientLocation(emptyLocationSelection());
       setShowEditClientModal(false);
       showToast("Client updated successfully", "success");
     } catch (err: any) {
@@ -647,8 +737,6 @@ export default function CreateGuidePage() {
         createdCity._id,
         cityById
       );
-      newBeneficiary.cityLabel = createdCity.label;
-      newBeneficiary.zipCode = createdCity.postalCode || "";
     }
 
     if (!isPersonNameValid(newBeneficiary)) {
@@ -703,7 +791,9 @@ export default function CreateGuidePage() {
       if (refreshed?.success) {
         const normalized = normalizeClient(refreshed.client);
         setSenderClient(normalized);
-        setBeneficiaryIndex(Math.max(0, (normalized.beneficiaries?.length || 1) - 1));
+        setBeneficiaryIndex(
+          Math.max(0, (normalized.beneficiaries?.length || 1) - 1)
+        );
         setClients((prev) =>
           prev.map((c) => (c._id === senderClientId ? normalized : c))
         );
@@ -711,6 +801,7 @@ export default function CreateGuidePage() {
 
       setCreateBeneficiaryNewCity(false);
       setCreateBeneficiaryCityForm(emptyNewCityForm());
+      setCreateBeneficiaryLocation(emptyLocationSelection());
       setBeneficiaryForm(emptyBeneficiary());
       setShowAddBeneficiaryModal(false);
       showToast("Beneficiary added successfully", "success");
@@ -736,8 +827,6 @@ export default function CreateGuidePage() {
         createdCity._id,
         cityById
       );
-      updatedBeneficiary.cityLabel = createdCity.label;
-      updatedBeneficiary.zipCode = createdCity.postalCode || "";
     }
 
     if (!isPersonNameValid(updatedBeneficiary)) {
@@ -795,6 +884,7 @@ export default function CreateGuidePage() {
 
       setEditBeneficiaryNewCity(false);
       setEditBeneficiaryCityForm(emptyNewCityForm());
+      setEditBeneficiaryLocation(emptyLocationSelection());
       setShowEditBeneficiaryModal(false);
       showToast("Beneficiary updated successfully", "success");
     } catch (err: any) {
@@ -916,10 +1006,10 @@ export default function CreateGuidePage() {
       prev.map((s) =>
         s.id === id
           ? {
-            ...s,
-            included,
-            quantity: included ? Math.max(1, s.quantity) : 0,
-          }
+              ...s,
+              included,
+              quantity: included ? Math.max(1, s.quantity) : 0,
+            }
           : s
       )
     );
@@ -962,13 +1052,18 @@ export default function CreateGuidePage() {
         setBeneficiaryIndex={setBeneficiaryIndex}
         beneficiaryPreview={beneficiaryPreview}
         onOpenEditClient={openEditClient}
-        onOpenCreateClient={() => setShowCreateClientModal(true)}
+        onOpenCreateClient={() => {
+          setCreateClientLocation(emptyLocationSelection());
+          setCreateBeneficiaryLocation(emptyLocationSelection());
+          setShowCreateClientModal(true);
+        }}
         onOpenEditBeneficiary={openEditBeneficiary}
         onOpenAddBeneficiary={() => {
           if (!senderClientId) {
             showToast("Select a sender first", "error");
             return;
           }
+          setCreateBeneficiaryLocation(emptyLocationSelection());
           setShowAddBeneficiaryModal(true);
         }}
       />
@@ -1055,7 +1150,19 @@ export default function CreateGuidePage() {
         cityById={cityById}
         loadingCities={loadingCities}
         savingNewCity={savingNewCity}
+        countryOptions={COUNTRY_OPTIONS}
+        getDepartmentsByCountry={getDepartmentsByCountry}
+        getCitiesByCountryAndDepartment={getCitiesByCountryAndDepartment}
         emptyNewCityForm={emptyNewCityForm}
+        emptyLocationSelection={emptyLocationSelection}
+        createClientLocation={createClientLocation}
+        setCreateClientLocation={setCreateClientLocation}
+        createBeneficiaryLocation={createBeneficiaryLocation}
+        setCreateBeneficiaryLocation={setCreateBeneficiaryLocation}
+        editClientLocation={editClientLocation}
+        setEditClientLocation={setEditClientLocation}
+        editBeneficiaryLocation={editBeneficiaryLocation}
+        setEditBeneficiaryLocation={setEditBeneficiaryLocation}
         showCreateClientModal={showCreateClientModal}
         setShowCreateClientModal={setShowCreateClientModal}
         creatingClient={creatingClient}
@@ -1083,6 +1190,10 @@ export default function CreateGuidePage() {
             profile: applyCitySelection(prev.profile, createdCity._id, cityById),
           }));
 
+          setCreateClientLocation({
+            country: createdCity.country || "",
+            department: createdCity.department || "",
+          });
           setCreateClientNewCity(false);
           setCreateClientCityForm(emptyNewCityForm());
         }}
@@ -1101,6 +1212,10 @@ export default function CreateGuidePage() {
             ),
           }));
 
+          setCreateBeneficiaryLocation({
+            country: createdCity.country || "",
+            department: createdCity.department || "",
+          });
           setCreateBeneficiaryNewCity(false);
           setCreateBeneficiaryCityForm(emptyNewCityForm());
         }}
@@ -1124,6 +1239,10 @@ export default function CreateGuidePage() {
             profile: applyCitySelection(prev.profile, createdCity._id, cityById),
           }));
 
+          setEditClientLocation({
+            country: createdCity.country || "",
+            department: createdCity.department || "",
+          });
           setEditClientNewCity(false);
           setEditClientCityForm(emptyNewCityForm());
         }}
@@ -1143,6 +1262,10 @@ export default function CreateGuidePage() {
             applyCitySelection(prev, createdCity._id, cityById)
           );
 
+          setCreateBeneficiaryLocation({
+            country: createdCity.country || "",
+            department: createdCity.department || "",
+          });
           setCreateBeneficiaryNewCity(false);
           setCreateBeneficiaryCityForm(emptyNewCityForm());
         }}
@@ -1166,6 +1289,10 @@ export default function CreateGuidePage() {
             applyCitySelection(prev, createdCity._id, cityById)
           );
 
+          setEditBeneficiaryLocation({
+            country: createdCity.country || "",
+            department: createdCity.department || "",
+          });
           setEditBeneficiaryNewCity(false);
           setEditBeneficiaryCityForm(emptyNewCityForm());
         }}

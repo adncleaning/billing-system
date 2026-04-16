@@ -29,8 +29,12 @@ export interface City {
   _id: string;
   label: string;
   country: string;
+  department: string;
+  city: string;
   postalCode?: string | null;
   isActive: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface TariffRange {
