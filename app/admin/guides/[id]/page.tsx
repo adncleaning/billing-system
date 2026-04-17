@@ -111,6 +111,7 @@ type Guide = {
   status?: string;
   createdAt?: string;
   updatedAt?: string;
+  createdBy?: UserRef | null;
 
   locationStatus?: string;
   isProcessed?: boolean;
@@ -507,6 +508,7 @@ export default function ShowGuidePage() {
       console.error(error);
     }
   };
+
   const openGuideDeclarationPdf = async (shouldPrint = false) => {
     try {
       if (!guide?._id || !token) return;
@@ -617,6 +619,7 @@ export default function ShowGuidePage() {
       console.error(error);
     }
   };
+
   const openGuideLabelEcuadorPdf = async () => {
     try {
       if (!guide?._id || !token) return;
@@ -696,7 +699,6 @@ export default function ShowGuidePage() {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      {/* Header */}
       <div className="border border-gray-200 bg-white px-6 py-5">
         <div className="mb-5 flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
           <div>
@@ -888,6 +890,14 @@ export default function ShowGuidePage() {
             </div>
 
             <div className="flex items-start gap-2">
+              <User className="mt-0.5 h-4 w-4 text-gray-400" />
+              <span>
+                <span className="font-medium">Creado por:</span>{" "}
+                {prettyUser(guide.createdBy)}
+              </span>
+            </div>
+
+            <div className="flex items-start gap-2">
               <MapPin className="mt-0.5 h-4 w-4 text-gray-400" />
               <span>
                 <span className="font-medium">Ciudad destino:</span>{" "}
@@ -970,7 +980,6 @@ export default function ShowGuidePage() {
         </div>
       </div>
 
-      {/* Cargos */}
       <SectionCard title="Cargos a la Guía">
         <div className="overflow-x-auto">
           <table className="min-w-full border-collapse text-sm">
@@ -1020,7 +1029,6 @@ export default function ShowGuidePage() {
         </div>
       </SectionCard>
 
-      {/* Remitente / Destinatario */}
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
         <SectionCard title="Remitente">
           <div className="space-y-3 text-sm text-gray-700">
@@ -1045,7 +1053,6 @@ export default function ShowGuidePage() {
         </SectionCard>
       </div>
 
-      {/* Paquetes */}
       <SectionCard title="Paquetes">
         {guide.packages?.length ? (
           <div className="overflow-x-auto">
@@ -1121,7 +1128,6 @@ export default function ShowGuidePage() {
         )}
       </SectionCard>
 
-      {/* Documentos */}
       <SectionCard
         title={`Documentos: Guía ${guide.number || ""}`}
         right={
@@ -1138,7 +1144,6 @@ export default function ShowGuidePage() {
         </div>
       </SectionCard>
 
-      {/* Servicios */}
       <SectionCard title="Servicios">
         <div className="overflow-x-auto">
           <table className="min-w-full border-collapse text-sm">
@@ -1212,7 +1217,6 @@ export default function ShowGuidePage() {
         )}
       </SectionCard>
 
-      {/* Imágenes */}
       <SectionCard
         title={`Imágenes en Guía ${guide.number || ""}`}
         right={
@@ -1229,7 +1233,6 @@ export default function ShowGuidePage() {
         </div>
       </SectionCard>
 
-      {/* Historial de estatus */}
       <SectionCard title={`Estatus para Guía ${guide.number || ""}`}>
         {latestStatuses.length ? (
           <div className="overflow-x-auto">
@@ -1286,7 +1289,7 @@ export default function ShowGuidePage() {
                     </span>
                   </td>
                   <td className="px-3 py-3">Guía creada</td>
-                  <td className="px-3 py-3">System</td>
+                  <td className="px-3 py-3">{prettyUser(guide.createdBy)}</td>
                 </tr>
               </tbody>
             </table>
@@ -1294,7 +1297,6 @@ export default function ShowGuidePage() {
         )}
       </SectionCard>
 
-      {/* Bitácora interna */}
       <SectionCard title="Bitácora interna">
         {latestInternalNotes.length ? (
           <div className="space-y-3">
@@ -1327,6 +1329,7 @@ export default function ShowGuidePage() {
           </div>
         )}
       </SectionCard>
+
       {cancelOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <button
@@ -1387,6 +1390,7 @@ export default function ShowGuidePage() {
           </div>
         </div>
       )}
+
       {statusModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div
@@ -1536,6 +1540,7 @@ export default function ShowGuidePage() {
           </div>
         </div>
       )}
+
       {showCustomsPdfModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div

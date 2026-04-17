@@ -101,7 +101,11 @@ export default function CreateGuidePage() {
   const [senderSearch, setSenderSearch] = useState("");
   const [senderClientId, setSenderClientId] = useState("");
   const [senderClient, setSenderClient] = useState<Client | null>(null);
+
   const [beneficiaryIndex, setBeneficiaryIndex] = useState(0);
+  const [useClientAsBeneficiary, setUseClientAsBeneficiary] = useState(false);
+  const [beneficiaryFromClientId, setBeneficiaryFromClientId] = useState("");
+  const [beneficiaryClientSearch, setBeneficiaryClientSearch] = useState("");
 
   const [agency, setAgency] = useState("Via logistics");
   const [observations, setObservations] = useState("");
@@ -235,10 +239,7 @@ export default function CreateGuidePage() {
 
       const current = grouped.get(country) || [];
       if (!current.includes(department)) current.push(department);
-      grouped.set(
-        country,
-        [...current].sort((a, b) => a.localeCompare(b))
-      );
+      grouped.set(country, [...current].sort((a, b) => a.localeCompare(b)));
     }
 
     return grouped;
@@ -338,10 +339,45 @@ export default function CreateGuidePage() {
     });
   }, [clients, senderSearch]);
 
+  const filteredBeneficiaryClients = useMemo(() => {
+    const term = beneficiaryClientSearch.toLowerCase().trim();
+
+    const base = clients.filter((c) => c._id !== senderClientId);
+
+    if (!term) return base;
+
+    return base.filter((c) => {
+      const p = c.profile || emptyPerson();
+      const name = displayPersonName(p).toLowerCase();
+
+      return (
+        name.includes(term) ||
+        (p.companyName || "").toLowerCase().includes(term) ||
+        (p.email || "").toLowerCase().includes(term) ||
+        (p.phone || "").toLowerCase().includes(term) ||
+        (p.mobile || "").toLowerCase().includes(term) ||
+        (p.identification || "").toLowerCase().includes(term)
+      );
+    });
+  }, [clients, beneficiaryClientSearch, senderClientId]);
+
   const beneficiaryPreview = useMemo(() => {
+    if (useClientAsBeneficiary) {
+      const selectedClient = clients.find(
+        (c) => c._id === beneficiaryFromClientId
+      );
+      return selectedClient?.profile || null;
+    }
+
     if (!senderClient?.beneficiaries?.length) return null;
     return senderClient.beneficiaries[beneficiaryIndex] || null;
-  }, [senderClient, beneficiaryIndex]);
+  }, [
+    useClientAsBeneficiary,
+    clients,
+    beneficiaryFromClientId,
+    senderClient,
+    beneficiaryIndex,
+  ]);
 
   const loadCities = async () => {
     setLoadingCities(true);
@@ -439,6 +475,9 @@ export default function CreateGuidePage() {
       setBeneficiaryIndex(0);
       setAvailableInvoices([]);
       setSelectedInvoiceIds([]);
+      setUseClientAsBeneficiary(false);
+      setBeneficiaryFromClientId("");
+      setBeneficiaryClientSearch("");
       return;
     }
 
@@ -464,6 +503,9 @@ export default function CreateGuidePage() {
         }
 
         setSelectedInvoiceIds([]);
+        setUseClientAsBeneficiary(false);
+        setBeneficiaryFromClientId("");
+        setBeneficiaryClientSearch("");
       } catch {
         showToast("Error loading client detail", "error");
         setAvailableInvoices([]);
@@ -557,6 +599,14 @@ export default function CreateGuidePage() {
   };
 
   const openEditBeneficiary = () => {
+    if (useClientAsBeneficiary) {
+      showToast(
+        "When using another client as beneficiary, edit that client directly from the client list.",
+        "error"
+      );
+      return;
+    }
+
     if (!senderClientId || !senderClient) {
       showToast("Select a sender first", "error");
       return;
@@ -921,7 +971,12 @@ export default function CreateGuidePage() {
         return;
       }
 
-      if (!senderClient?.beneficiaries?.length) {
+      if (useClientAsBeneficiary) {
+        if (!beneficiaryFromClientId) {
+          showToast("Select a client to use as beneficiary", "error");
+          return;
+        }
+      } else if (!senderClient?.beneficiaries?.length) {
         showToast("Sender has no beneficiaries. Add at least one.", "error");
         return;
       }
@@ -947,12 +1002,11 @@ export default function CreateGuidePage() {
 
       setSaving(true);
 
-      const payload = {
+      const payload: any = {
         agency,
         observations,
         tariffHeading,
         senderClientId,
-        beneficiaryIndex,
         tariffId,
         measureValue,
         declaredValue,
@@ -985,6 +1039,12 @@ export default function CreateGuidePage() {
           items: Array.isArray(p.items) ? p.items : [],
         })),
       };
+
+      if (useClientAsBeneficiary) {
+        payload.beneficiaryFromClientId = beneficiaryFromClientId;
+      } else {
+        payload.beneficiaryIndex = beneficiaryIndex;
+      }
 
       const data: any = await Api("POST", "guides", payload, router);
       if (!data?.success) {
@@ -1051,6 +1111,13 @@ export default function CreateGuidePage() {
         beneficiaryIndex={beneficiaryIndex}
         setBeneficiaryIndex={setBeneficiaryIndex}
         beneficiaryPreview={beneficiaryPreview}
+        useClientAsBeneficiary={useClientAsBeneficiary}
+        setUseClientAsBeneficiary={setUseClientAsBeneficiary}
+        beneficiaryFromClientId={beneficiaryFromClientId}
+        setBeneficiaryFromClientId={setBeneficiaryFromClientId}
+        beneficiaryClientSearch={beneficiaryClientSearch}
+        setBeneficiaryClientSearch={setBeneficiaryClientSearch}
+        filteredBeneficiaryClients={filteredBeneficiaryClients}
         onOpenEditClient={openEditClient}
         onOpenCreateClient={() => {
           setCreateClientLocation(emptyLocationSelection());
