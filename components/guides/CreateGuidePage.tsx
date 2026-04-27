@@ -342,11 +342,9 @@ export default function CreateGuidePage() {
   const filteredBeneficiaryClients = useMemo(() => {
     const term = beneficiaryClientSearch.toLowerCase().trim();
 
-    const base = clients.filter((c) => c._id !== senderClientId);
+    if (!term) return clients;
 
-    if (!term) return base;
-
-    return base.filter((c) => {
+    return clients.filter((c) => {
       const p = c.profile || emptyPerson();
       const name = displayPersonName(p).toLowerCase();
 
@@ -359,7 +357,7 @@ export default function CreateGuidePage() {
         (p.identification || "").toLowerCase().includes(term)
       );
     });
-  }, [clients, beneficiaryClientSearch, senderClientId]);
+  }, [clients, beneficiaryClientSearch]);
 
   const beneficiaryPreview = useMemo(() => {
     if (useClientAsBeneficiary) {
@@ -1066,10 +1064,10 @@ export default function CreateGuidePage() {
       prev.map((s) =>
         s.id === id
           ? {
-              ...s,
-              included,
-              quantity: included ? Math.max(1, s.quantity) : 0,
-            }
+            ...s,
+            included,
+            quantity: included ? Math.max(1, s.quantity) : 0,
+          }
           : s
       )
     );
