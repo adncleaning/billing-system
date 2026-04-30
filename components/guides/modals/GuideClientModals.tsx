@@ -1,6 +1,6 @@
 "use client";
 
-import type React from "react";
+import React from "react";
 import Modal from "@/components/Modal";
 import type { City, EntityType, PersonPayload } from "@/types/guide";
 import { applyCitySelection } from "@/utils/guideHelpers";
@@ -312,9 +312,7 @@ function LocationSelector({
   location,
   setLocation,
   loadingCities,
-  countryOptions,
-  getDepartmentsByCountry,
-  getCitiesByCountryAndDepartment,
+  cities = [],
   cityById,
 }: {
   person: PersonPayload;
@@ -322,102 +320,118 @@ function LocationSelector({
   location: LocationSelection;
   setLocation: React.Dispatch<React.SetStateAction<LocationSelection>>;
   loadingCities: boolean;
-  countryOptions: CountryOption[];
-  getDepartmentsByCountry: (country: string) => string[];
-  getCitiesByCountryAndDepartment: (
-    country: string,
-    department: string
-  ) => City[];
+  cities?: City[];
   cityById: Map<string, City>;
 }) {
-  const selectedCountry = location.country;
-  const selectedDepartment = location.department;
-  const departments = getDepartmentsByCountry(selectedCountry);
-  const availableCities = getCitiesByCountryAndDepartment(
-    selectedCountry,
-    selectedDepartment
-  );
+  const [query, setQuery] = React.useState(person.cityLabel || "");
+  const [open, setOpen] = React.useState(false);
+
+  const filteredCities = React.useMemo(() => {
+    const q = query.trim().toLowerCase();
+
+    return [...cities]
+      // 🔥 FILTRO NUEVO (solo ciudades válidas)
+      .filter((city) => city.city && city.department && city.country)
+
+      // 🔍 filtro de búsqueda
+      .filter((city) => {
+        if (!q) return true;
+
+        return [
+          city.city,
+          city.department,
+          city.country,
+        ]
+          .join(" ")
+          .toLowerCase()
+          .includes(q);
+      })
+
+      // 📊 orden
+      .sort((a, b) => {
+        const cityA = `${a.city} ${a.department}`.toLowerCase();
+        const cityB = `${b.city} ${b.department}`.toLowerCase();
+        return cityA.localeCompare(cityB);
+      })
+
+      .slice(0, 30);
+  }, [cities, query]);
+
+  const handleSelectCity = (city: City) => {
+    setQuery(`${city.city}${city.department ? ` (${city.department})` : ""}`);
+
+    setPerson((prev) => applyCitySelection(prev, city._id, cityById));
+
+    setLocation({
+      country: city.country || "",
+      department: city.department || "",
+    });
+
+    setOpen(false);
+  };
 
   return (
     <>
-      <div>
-        <label className="label">Country</label>
-        <select
-          className="input"
-          value={selectedCountry}
+      <div className="col-span-2 relative">
+        <label className="label">City</label>
+
+        <input
+          className="input w-full"
+          value={query}
           disabled={loadingCities}
+          placeholder="Buscar Ciudad"
+          onFocus={() => setOpen(true)}
           onChange={(e) => {
-            const country = e.target.value;
+            setQuery(e.target.value);
+            setOpen(true);
+
+            setPerson((prev) => ({
+              ...prev,
+              cityId: null,
+              cityLabel: "",
+              zipCode: "",
+            }));
+
             setLocation({
-              country,
+              country: "",
               department: "",
             });
-            setPerson((prev) => ({
-              ...prev,
-              cityId: null,
-              cityLabel: "",
-              zipCode: "",
-              location: country,
-            }));
           }}
-        >
-          <option value="">Choose...</option>
-          {countryOptions.map((country) => (
-            <option key={country.name} value={country.name}>
-              {country.flag} {country.name}
-            </option>
-          ))}
-        </select>
+        />
+
+        {open && (
+          <div className="absolute z-50 mt-1 w-full max-h-64 overflow-y-auto rounded-md border border-gray-300 bg-white shadow-lg">
+            {filteredCities.length ? (
+              filteredCities.map((city) => (
+                <button
+                  key={city._id}
+                  type="button"
+                  className="w-full text-left px-3 py-2 text-sm hover:bg-blue-600 hover:text-white"
+                  onMouseDown={() => handleSelectCity(city)}
+                >
+                  {city.city}
+                  {city.department ? ` (${city.department}` : ""}
+                  {city.country ? `, ${city.country}` : ""}
+                  {city.department ? ")" : ""}
+                </button>
+              ))
+            ) : (
+              <div className="px-3 py-2 text-sm text-gray-500">
+                No cities found
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div>
-        <label className="label">Department</label>
-        <select
-          className="input"
-          value={selectedDepartment}
-          disabled={loadingCities || !selectedCountry}
-          onChange={(e) => {
-            const department = e.target.value;
-            setLocation({
-              country: selectedCountry,
-              department,
-            });
-            setPerson((prev) => ({
-              ...prev,
-              cityId: null,
-              cityLabel: "",
-              zipCode: "",
-              location: selectedCountry,
-            }));
-          }}
-        >
-          <option value="">Choose...</option>
-          {departments.map((department) => (
-            <option key={department} value={department}>
-              {department}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div>
-        <label className="label">City</label>
-        <select
-          className="input"
-          value={person.cityId || ""}
-          disabled={loadingCities || !selectedCountry || !selectedDepartment}
-          onChange={(e) => {
-            const cityId = e.target.value;
-            setPerson((prev) => applyCitySelection(prev, cityId, cityById));
-          }}
-        >
-          <option value="">Choose...</option>
-          {availableCities.map((city) => (
-            <option key={city._id} value={city._id}>
-              {city.city}
-            </option>
-          ))}
-        </select>
+        <label className="label">Country</label>
+        <input
+          className="input bg-gray-50"
+          value={location.country || ""}
+          readOnly
+          placeholder="Auto-filled"
+        />
       </div>
 
       <div>
@@ -633,9 +647,7 @@ export default function GuideClientModals(props: Props) {
                 location={createClientLocation}
                 setLocation={setCreateClientLocation}
                 loadingCities={loadingCities}
-                countryOptions={countryOptions}
-                getDepartmentsByCountry={getDepartmentsByCountry}
-                getCitiesByCountryAndDepartment={getCitiesByCountryAndDepartment}
+                cities={props.cities}
                 cityById={cityById}
               />
 
@@ -794,19 +806,17 @@ export default function GuideClientModals(props: Props) {
                 </div>
 
                 <LocationSelector
-                  person={clientForm.beneficiary}
+                  person={clientForm.profile}
                   setPerson={(updater) =>
                     setClientForm((prev) => ({
                       ...prev,
-                      beneficiary: updater(prev.beneficiary),
+                      profile: updater(prev.profile),
                     }))
                   }
-                  location={createBeneficiaryLocation}
-                  setLocation={setCreateBeneficiaryLocation}
+                  location={createClientLocation}
+                  setLocation={setCreateClientLocation}
                   loadingCities={loadingCities}
-                  countryOptions={countryOptions}
-                  getDepartmentsByCountry={getDepartmentsByCountry}
-                  getCitiesByCountryAndDepartment={getCitiesByCountryAndDepartment}
+                  cities={props.cities}
                   cityById={cityById}
                 />
 
@@ -956,19 +966,17 @@ export default function GuideClientModals(props: Props) {
               </div>
 
               <LocationSelector
-                person={editClientForm.profile}
+                person={clientForm.profile}
                 setPerson={(updater) =>
-                  setEditClientForm((prev) => ({
+                  setClientForm((prev) => ({
                     ...prev,
                     profile: updater(prev.profile),
                   }))
                 }
-                location={editClientLocation}
-                setLocation={setEditClientLocation}
+                location={createClientLocation}
+                setLocation={setCreateClientLocation}
                 loadingCities={loadingCities}
-                countryOptions={countryOptions}
-                getDepartmentsByCountry={getDepartmentsByCountry}
-                getCitiesByCountryAndDepartment={getCitiesByCountryAndDepartment}
+                cities={props.cities}
                 cityById={cityById}
               />
 
@@ -1149,14 +1157,17 @@ export default function GuideClientModals(props: Props) {
             </div>
 
             <LocationSelector
-              person={beneficiaryForm}
-              setPerson={(updater) => setBeneficiaryForm((prev) => updater(prev))}
-              location={createBeneficiaryLocation}
-              setLocation={setCreateBeneficiaryLocation}
+              person={clientForm.profile}
+              setPerson={(updater) =>
+                setClientForm((prev) => ({
+                  ...prev,
+                  profile: updater(prev.profile),
+                }))
+              }
+              location={createClientLocation}
+              setLocation={setCreateClientLocation}
               loadingCities={loadingCities}
-              countryOptions={countryOptions}
-              getDepartmentsByCountry={getDepartmentsByCountry}
-              getCitiesByCountryAndDepartment={getCitiesByCountryAndDepartment}
+              cities={props.cities}
               cityById={cityById}
             />
 
@@ -1345,9 +1356,7 @@ export default function GuideClientModals(props: Props) {
               location={editBeneficiaryLocation}
               setLocation={setEditBeneficiaryLocation}
               loadingCities={loadingCities}
-              countryOptions={countryOptions}
-              getDepartmentsByCountry={getDepartmentsByCountry}
-              getCitiesByCountryAndDepartment={getCitiesByCountryAndDepartment}
+              cities={props.cities}
               cityById={cityById}
             />
 

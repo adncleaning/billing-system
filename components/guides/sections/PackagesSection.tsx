@@ -249,10 +249,10 @@ export default function PackagesSection({
                     {inv.itemsCount || inv.items?.length || 0} línea(s) · Valor declarado £
                     {toNum(
                       inv.totalDeclaredValue ??
-                        (inv.items || []).reduce(
-                          (sum, item) => sum + toNum(item.total),
-                          0
-                        )
+                      (inv.items || []).reduce(
+                        (sum, item) => sum + toNum(item.total),
+                        0
+                      )
                     ).toFixed(2)}
                   </div>
 
@@ -329,7 +329,8 @@ export default function PackagesSection({
           <tbody>
             {packages.map((p) => {
               const vol = volumetricWeight(p);
-              const chargeable = packageChargeableWeight(p);
+              const rawChargeable = packageChargeableWeight(p);
+              const chargeable = Math.ceil(rawChargeable);
 
               return (
                 <tr key={p.id} className="border-t align-top">
@@ -447,7 +448,7 @@ export default function PackagesSection({
                   <td className="py-2 pr-2 min-w-[100px]">
                     <input
                       className="input bg-gray-100 text-right"
-                      value={chargeable.toFixed(2)}
+                      value={chargeable}
                       readOnly
                     />
                   </td>

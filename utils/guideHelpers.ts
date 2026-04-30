@@ -106,7 +106,10 @@ export const volumetricWeight = (p: PackageRow) => {
 export const packageChargeableWeight = (p: PackageRow) => {
   const real = toNum(p.weight);
   const vol = volumetricWeight(p);
-  return Math.max(real, vol);
+
+  const chargeable = Math.max(real, vol);
+
+  return Math.ceil(chargeable); // 🔥 AQUÍ está la clave
 };
 
 export const isPersonNameValid = (p: PersonPayload) => {

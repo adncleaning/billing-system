@@ -13,7 +13,44 @@ type Props = {
   internalComments: string;
   setInternalComments: (value: string) => void;
   internalCommentsMax: number;
+  senderCountry?: string;
 };
+
+const COLOMBIA_TARIFF_OPTIONS = [
+  {
+    value: "9807200000",
+    label: "General (Varias cosas)",
+  },
+  {
+    value: "8471300000",
+    label: "Tablet/ IPAD (viaja solo)",
+  },
+  {
+    value: "8471300000",
+    label: "Laptop (Portátil)(viaja solo)",
+  },
+  {
+    value: "8517130000",
+    label: "Celular (Debe ir solo + colocar IMEI guia)",
+  },
+  {
+    value: "8473300000",
+    label: "Screen Touch (Pantalla táctil) (viaja solo)",
+  },
+  {
+    value: "9807200000",
+    label: "ELECTRONIC SPARE PART (Pieza repuesto electrónico)",
+  },
+  {
+    value: "8714200000",
+    label:
+      "Vehículos automóviles, tractores, Motocicletas, triciclos y sillas de ruedas equipados con motor o sus partes (pieza repuesto automotriz)",
+  },
+  {
+    value: "9006910000",
+    label: "Instrumentos y aparatos de óptica, fotografía o cinematografía",
+  },
+];
 
 const AGENCY_OPTIONS = ["Via logistics"];
 
@@ -76,9 +113,8 @@ function AgencySelect({
               setSearch("");
               setOpen(false);
             }}
-            className={`w-full text-left px-4 py-2 text-sm hover:bg-blue-50 ${
-              !agency ? "bg-blue-600 text-white hover:bg-blue-600" : "text-gray-700"
-            }`}
+            className={`w-full text-left px-4 py-2 text-sm hover:bg-blue-50 ${!agency ? "bg-blue-600 text-white hover:bg-blue-600" : "text-gray-700"
+              }`}
           >
             --Seleccione una agencia--
           </button>
@@ -92,11 +128,10 @@ function AgencySelect({
                 setSearch("");
                 setOpen(false);
               }}
-              className={`w-full text-left px-4 py-2 text-sm hover:bg-blue-50 ${
-                agency === item
-                  ? "bg-blue-600 text-white hover:bg-blue-600"
-                  : "text-gray-700"
-              }`}
+              className={`w-full text-left px-4 py-2 text-sm hover:bg-blue-50 ${agency === item
+                ? "bg-blue-600 text-white hover:bg-blue-600"
+                : "text-gray-700"
+                }`}
             >
               {item}
             </button>
@@ -123,7 +158,11 @@ export default function BasicInfoSection({
   internalComments,
   setInternalComments,
   internalCommentsMax,
+  senderCountry,
 }: Props) {
+  const isColombiaSender = String(senderCountry || "")
+    .toLowerCase()
+    .includes("colombia");
   return (
     <div className="card p-6">
       <h2 className="text-lg font-semibold text-gray-900 mb-4">Básicos</h2>
@@ -133,11 +172,28 @@ export default function BasicInfoSection({
 
         <div>
           <label className="label">Partida Arancelaria</label>
-          <input
-            className="input"
-            value={tariffHeading}
-            onChange={(e) => setTariffHeading(e.target.value)}
-          />
+
+          {isColombiaSender ? (
+            <select
+              className="input"
+              value={tariffHeading}
+              onChange={(e) => setTariffHeading(e.target.value)}
+            >
+              <option value="">Seleccione una partida</option>
+
+              {COLOMBIA_TARIFF_OPTIONS.map((option, index) => (
+                <option key={`${option.value}-${index}`} value={option.value}>
+                  {option.value} — {option.label}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              className="input"
+              value={tariffHeading}
+              onChange={(e) => setTariffHeading(e.target.value)}
+            />
+          )}
         </div>
 
         <div>

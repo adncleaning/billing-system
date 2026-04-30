@@ -1143,6 +1143,7 @@ export default function CreateGuidePage() {
         internalComments={internalComments}
         setInternalComments={setInternalComments}
         internalCommentsMax={INTERNAL_COMMENTS_MAX}
+        senderCountry={senderClient?.profile?.cityLabel || ""}
       />
 
       <PackagesSection

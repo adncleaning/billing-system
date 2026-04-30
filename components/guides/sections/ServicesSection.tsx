@@ -20,7 +20,7 @@ export default function ServicesSection({
 }: Props) {
   return (
     <div className="card p-6">
-      <h2 className="text-lg font-semibold text-gray-900 mb-4">Servicios</h2>
+      <h2 className="text-lg font-semibold text-gray-900 mb-4">Embalaje</h2>
 
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
