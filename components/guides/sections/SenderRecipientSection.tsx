@@ -30,7 +30,31 @@ type Props = {
   onOpenCreateClient: () => void;
   onOpenEditBeneficiary: () => void;
   onOpenAddBeneficiary: () => void;
+  senderNotificationPreferences: {
+    email: boolean;
+    whatsapp: boolean;
+  };
+
+  setSenderNotificationPreferences: React.Dispatch<
+    React.SetStateAction<{
+      email: boolean;
+      whatsapp: boolean;
+    }>
+  >;
+
+  beneficiaryNotificationPreferences: {
+    email: boolean;
+    whatsapp: boolean;
+  };
+
+  setBeneficiaryNotificationPreferences: React.Dispatch<
+    React.SetStateAction<{
+      email: boolean;
+      whatsapp: boolean;
+    }>
+  >;
 };
+
 
 function renderAddress(person?: PersonPayload | null) {
   if (!person) return "—";
@@ -122,11 +146,10 @@ function SearchableClientSelect({
                 key={client._id}
                 type="button"
                 onClick={() => handleSelect(client)}
-                className={`w-full text-left px-4 py-2 text-sm hover:bg-blue-50 ${
-                  value === client._id
-                    ? "bg-blue-600 text-white hover:bg-blue-600"
-                    : "text-gray-700"
-                }`}
+                className={`w-full text-left px-4 py-2 text-sm hover:bg-blue-50 ${value === client._id
+                  ? "bg-blue-600 text-white hover:bg-blue-600"
+                  : "text-gray-700"
+                  }`}
               >
                 {displayClientLabel(client)}
               </button>
@@ -167,6 +190,10 @@ export default function SenderRecipientSection({
   onOpenCreateClient,
   onOpenEditBeneficiary,
   onOpenAddBeneficiary,
+  senderNotificationPreferences,
+  setSenderNotificationPreferences,
+  beneficiaryNotificationPreferences,
+  setBeneficiaryNotificationPreferences,
 }: Props) {
   return (
     <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
@@ -226,7 +253,46 @@ export default function SenderRecipientSection({
             </div>
           </div>
         )}
+
+        {senderClient && (
+          <div className="mt-4 border-t pt-4">
+            <h3 className="text-sm font-semibold text-gray-900 mb-3">
+              Sender notifications
+            </h3>
+
+            <div className="space-y-2">
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={senderNotificationPreferences.email}
+                  onChange={(e) =>
+                    setSenderNotificationPreferences((prev) => ({
+                      ...prev,
+                      email: e.target.checked,
+                    }))
+                  }
+                />
+                Notify by email
+              </label>
+
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={senderNotificationPreferences.whatsapp}
+                  onChange={(e) =>
+                    setSenderNotificationPreferences((prev) => ({
+                      ...prev,
+                      whatsapp: e.target.checked,
+                    }))
+                  }
+                />
+                Notify by WhatsApp
+              </label>
+            </div>
+          </div>
+        )}
       </div>
+
 
       <div className="card p-6">
         <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
@@ -347,7 +413,47 @@ export default function SenderRecipientSection({
               : "Select a sender with beneficiaries."}
           </div>
         )}
+
+        {beneficiaryPreview && (
+          <div className="mt-4 border-t pt-4">
+            <h3 className="text-sm font-semibold text-gray-900 mb-3">
+              Recipient notifications
+            </h3>
+
+            <div className="space-y-2">
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={beneficiaryNotificationPreferences.email}
+                  onChange={(e) =>
+                    setBeneficiaryNotificationPreferences((prev) => ({
+                      ...prev,
+                      email: e.target.checked,
+                    }))
+                  }
+                />
+                Notify by email
+              </label>
+
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={beneficiaryNotificationPreferences.whatsapp}
+                  onChange={(e) =>
+                    setBeneficiaryNotificationPreferences((prev) => ({
+                      ...prev,
+                      whatsapp: e.target.checked,
+                    }))
+                  }
+                />
+                Notify by WhatsApp
+              </label>
+            </div>
+          </div>
+        )}
       </div>
+
+
     </div>
   );
 }

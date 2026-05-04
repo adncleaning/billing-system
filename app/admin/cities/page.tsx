@@ -69,6 +69,9 @@ export default function CitiesPage() {
   const [rows, setRows] = useState<CityItem[]>([]);
   const [search, setSearch] = useState("");
 
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState<CityItem | null>(null);
 
@@ -124,6 +127,7 @@ export default function CitiesPage() {
       }
 
       showToast("Location created", "success");
+
       setShowModal(false);
       setEditing(null);
       setForm({
@@ -160,7 +164,12 @@ export default function CitiesPage() {
         postalCode: form.postalCode ? form.postalCode.trim() : null,
       };
 
-      const data: any = await Api("PUT", `cities/${editing._id}`, payload, router);
+      const data: any = await Api(
+        "PUT",
+        `cities/${editing._id}`,
+        payload,
+        router
+      );
 
       if (!data?.success) {
         showToast(data?.message || "Error updating location", "error");
@@ -168,6 +177,7 @@ export default function CitiesPage() {
       }
 
       showToast("Location updated", "success");
+
       setShowModal(false);
       setEditing(null);
       setForm({
@@ -198,6 +208,7 @@ export default function CitiesPage() {
         "https://api.adncleaningservices.co.uk/v1/api/";
 
       const cleanBaseUrl = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+
       const formData = new FormData();
       formData.append("file", file);
 
@@ -216,8 +227,11 @@ export default function CitiesPage() {
       }
 
       const summary = data?.summary || {};
+
       showToast(
-        `Import completed. Processed: ${summary.processed || 0}, errors: ${summary.errors || 0}`,
+        `Import completed. Processed: ${summary.processed || 0}, errors: ${
+          summary.errors || 0
+        }`,
         "success"
       );
 
@@ -254,6 +268,7 @@ export default function CitiesPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
     if (editing) await updateCity();
     else await createCity();
   };
@@ -266,6 +281,7 @@ export default function CitiesPage() {
     const t = setTimeout(() => {
       fetchCities();
     }, 350);
+
     return () => clearTimeout(t);
   }, [search]);
 
@@ -333,22 +349,37 @@ export default function CitiesPage() {
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
+
     if (!q) return rows;
 
     return rows.filter((r) =>
-      [
-        r.label,
-        r.country,
-        r.department,
-        r.city,
-        r.postalCode,
-      ]
+      [r.label, r.country, r.department, r.city, r.postalCode]
         .filter(Boolean)
         .join(" ")
         .toLowerCase()
         .includes(q)
     );
   }, [rows, search]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+
+  const paginatedRows = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return filtered.slice(start, start + pageSize);
+  }, [filtered, page, pageSize]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, pageSize]);
+
+  useEffect(() => {
+    if (page > totalPages) {
+      setPage(totalPages);
+    }
+  }, [page, totalPages]);
+
+  const fromRecord = filtered.length === 0 ? 0 : (page - 1) * pageSize + 1;
+  const toRecord = Math.min(page * pageSize, filtered.length);
 
   return (
     <div className="p-6 space-y-6">
@@ -368,6 +399,7 @@ export default function CitiesPage() {
               <Upload className="h-4 w-4" />
               {importing ? "Importing..." : "Import Excel"}
             </span>
+
             <input
               type="file"
               accept=".xlsx,.xls"
@@ -375,7 +407,9 @@ export default function CitiesPage() {
               disabled={importing}
               onChange={(e) => {
                 const file = e.target.files?.[0];
+
                 if (file) importExcel(file);
+
                 e.currentTarget.value = "";
               }}
             />
@@ -409,10 +443,51 @@ export default function CitiesPage() {
 
         <Table
           columns={columns}
-          data={filtered}
+          data={paginatedRows}
           loading={loading}
           emptyMessage="No locations found."
         />
+
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mt-5">
+          <div className="text-sm text-gray-500">
+            Showing <b>{fromRecord}</b> to <b>{toRecord}</b> of{" "}
+            <b>{filtered.length}</b> records
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <select
+              className="input w-24"
+              value={pageSize}
+              onChange={(e) => setPageSize(Number(e.target.value))}
+            >
+              <option value={25}>25</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+            </select>
+
+            <button
+              type="button"
+              className="btn-outline px-3 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={page <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+            >
+              Previous
+            </button>
+
+            <span className="text-sm text-gray-600">
+              Page <b>{page}</b> of <b>{totalPages}</b>
+            </span>
+
+            <button
+              type="button"
+              className="btn-outline px-3 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={page >= totalPages}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            >
+              Next
+            </button>
+          </div>
+        </div>
       </div>
 
       <Modal
@@ -427,10 +502,13 @@ export default function CitiesPage() {
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Country *
               </label>
+
               <select
                 className="input"
                 value={form.country}
-                onChange={(e) => setForm((p) => ({ ...p, country: e.target.value }))}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, country: e.target.value }))
+                }
                 required
               >
                 {COUNTRY_OPTIONS.map((country) => (
@@ -445,10 +523,13 @@ export default function CitiesPage() {
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Department *
               </label>
+
               <input
                 className="input"
                 value={form.department}
-                onChange={(e) => setForm((p) => ({ ...p, department: e.target.value }))}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, department: e.target.value }))
+                }
                 placeholder="e.g. Meta / Pichincha / Miranda / Madrid / England"
                 required
               />
@@ -458,10 +539,13 @@ export default function CitiesPage() {
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 City *
               </label>
+
               <input
                 className="input"
                 value={form.city}
-                onChange={(e) => setForm((p) => ({ ...p, city: e.target.value }))}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, city: e.target.value }))
+                }
                 placeholder="e.g. Acacías"
                 required
               />
@@ -471,10 +555,13 @@ export default function CitiesPage() {
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Postcode
               </label>
+
               <input
                 className="input"
                 value={form.postalCode}
-                onChange={(e) => setForm((p) => ({ ...p, postalCode: e.target.value }))}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, postalCode: e.target.value }))
+                }
                 placeholder="e.g. 507001 / SW1A 1AA"
               />
             </div>
@@ -483,7 +570,9 @@ export default function CitiesPage() {
           <div>
             <p className="text-xs text-gray-500 mt-2">
               Saved as:{" "}
-              <b>{buildLabel(form.city, form.department, form.country) || "—"}</b>
+              <b>
+                {buildLabel(form.city, form.department, form.country) || "—"}
+              </b>
             </p>
           </div>
 
@@ -495,6 +584,7 @@ export default function CitiesPage() {
             >
               Cancel
             </button>
+
             <button type="submit" className="btn-primary" disabled={loading}>
               {editing ? "Save changes" : "Create"}
             </button>

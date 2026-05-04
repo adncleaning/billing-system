@@ -329,32 +329,25 @@ function LocationSelector({
   const filteredCities = React.useMemo(() => {
     const q = query.trim().toLowerCase();
 
-    return [...cities]
-      // 🔥 FILTRO NUEVO (solo ciudades válidas)
+    const result = [...cities]
       .filter((city) => city.city && city.department && city.country)
-
-      // 🔍 filtro de búsqueda
       .filter((city) => {
         if (!q) return true;
 
-        return [
-          city.city,
-          city.department,
-          city.country,
-        ]
+        return [city.city, city.department, city.country]
           .join(" ")
           .toLowerCase()
           .includes(q);
       })
-
-      // 📊 orden
       .sort((a, b) => {
         const cityA = `${a.city} ${a.department}`.toLowerCase();
         const cityB = `${b.city} ${b.department}`.toLowerCase();
         return cityA.localeCompare(cityB);
-      })
+      });
 
-      .slice(0, 30);
+    // 🔥 comportamiento inteligente
+    if (!q) return result.slice(0, 50); // sin buscar → solo 50
+    return result; // buscando → todas las coincidencias
   }, [cities, query]);
 
   const handleSelectCity = (city: City) => {

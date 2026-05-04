@@ -1,5 +1,10 @@
 export type EntityType = "PERSON" | "COMPANY";
 
+export type NotificationPreferences = {
+  email: boolean;
+  whatsapp: boolean;
+};
+
 export type PersonPayload = {
   entityType: EntityType;
   firstName?: string;
@@ -15,6 +20,7 @@ export type PersonPayload = {
   zipCode?: string;
   location?: string;
   relationship?: string;
+  notificationPreferences?: NotificationPreferences;
 };
 
 export interface Client {
@@ -23,6 +29,7 @@ export interface Client {
   profile: PersonPayload;
   beneficiaries: PersonPayload[];
   isActive: boolean;
+  notificationPreferences?: NotificationPreferences;
 }
 
 export interface City {

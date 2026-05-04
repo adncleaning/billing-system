@@ -84,6 +84,9 @@ const emptyPackage = (): PackageRow => ({
   items: [],
 });
 
+
+
+
 export default function CreateGuidePage() {
   const router = useRouter();
   const { showToast } = useToast();
@@ -556,6 +559,39 @@ export default function CreateGuidePage() {
       }
     })();
   }, [tariffId, measureValue, router]);
+
+  const [senderNotificationPreferences, setSenderNotificationPreferences] =
+    useState({
+      email: true,
+      whatsapp: false,
+    });
+
+  const [
+    beneficiaryNotificationPreferences,
+    setBeneficiaryNotificationPreferences,
+  ] = useState({
+    email: true,
+    whatsapp: false,
+  });
+
+
+  useEffect(() => {
+    if (!senderClient) return;
+
+    setSenderNotificationPreferences({
+      email: senderClient.notificationPreferences?.email ?? true,
+      whatsapp: senderClient.notificationPreferences?.whatsapp ?? false,
+    });
+  }, [senderClient]);
+
+  useEffect(() => {
+    if (!beneficiaryPreview) return;
+
+    setBeneficiaryNotificationPreferences({
+      email: beneficiaryPreview.notificationPreferences?.email ?? true,
+      whatsapp: beneficiaryPreview.notificationPreferences?.whatsapp ?? false,
+    });
+  }, [beneficiaryPreview]);
 
   const updateClientProfile = (patch: Partial<PersonPayload>) => {
     setClientForm((prev) => ({
@@ -1036,6 +1072,10 @@ export default function CreateGuidePage() {
           chargeableWeight: packageChargeableWeight(p),
           items: Array.isArray(p.items) ? p.items : [],
         })),
+        notificationPreferences: {
+          sender: senderNotificationPreferences,
+          beneficiary: beneficiaryNotificationPreferences,
+        },
       };
 
       if (useClientAsBeneficiary) {
@@ -1107,6 +1147,7 @@ export default function CreateGuidePage() {
         filteredClients={filteredClients}
         loadingClients={loadingClients}
         beneficiaryIndex={beneficiaryIndex}
+
         setBeneficiaryIndex={setBeneficiaryIndex}
         beneficiaryPreview={beneficiaryPreview}
         useClientAsBeneficiary={useClientAsBeneficiary}
@@ -1131,6 +1172,10 @@ export default function CreateGuidePage() {
           setCreateBeneficiaryLocation(emptyLocationSelection());
           setShowAddBeneficiaryModal(true);
         }}
+        senderNotificationPreferences={senderNotificationPreferences}
+        setSenderNotificationPreferences={setSenderNotificationPreferences}
+        beneficiaryNotificationPreferences={beneficiaryNotificationPreferences}
+        setBeneficiaryNotificationPreferences={setBeneficiaryNotificationPreferences}
       />
 
       <BasicInfoSection
