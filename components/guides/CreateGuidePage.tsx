@@ -9,6 +9,8 @@ import { useToast } from "@/contexts/ToastContext";
 
 import SenderRecipientSection from "@/components/guides/sections/SenderRecipientSection";
 import BasicInfoSection from "@/components/guides/sections/BasicInfoSection";
+import DocumentsSection from "@/components/guides/sections/DocumentsSection";
+import GallerySection from "@/components/guides/sections/GallerySection";
 import PackagesSection from "@/components/guides/sections/PackagesSection";
 import TariffSection from "@/components/guides/sections/TariffSection";
 import ServicesSection from "@/components/guides/sections/ServicesSection";
@@ -83,6 +85,23 @@ const emptyPackage = (): PackageRow => ({
   pcs: 1,
   items: [],
 });
+
+type GuideTab = "basic" | "documents" | "gallery";
+
+type BookingDocument = {
+  id: string;
+  name: string;
+  type: string;
+  file: File | null;
+  notes: string;
+};
+
+type GalleryImage = {
+  id: string;
+  file: File | null;
+  previewUrl: string;
+  caption: string;
+};
 
 
 
@@ -225,6 +244,11 @@ export default function CreateGuidePage() {
     useState<LocationSelection>(emptyLocationSelection());
   const [editBeneficiaryLocation, setEditBeneficiaryLocation] =
     useState<LocationSelection>(emptyLocationSelection());
+
+  const [activeTab, setActiveTab] = useState<GuideTab>("basic");
+
+  const [documents, setDocuments] = useState<BookingDocument[]>([]);
+  const [gallery, setGallery] = useState<GalleryImage[]>([]);
 
   const cityById = useMemo(() => {
     const map = new Map<string, City>();
@@ -1076,6 +1100,17 @@ export default function CreateGuidePage() {
           sender: senderNotificationPreferences,
           beneficiary: beneficiaryNotificationPreferences,
         },
+        documents: documents.map((doc) => ({
+          name: doc.name,
+          type: doc.type,
+          notes: doc.notes,
+          fileName: doc.file?.name || null,
+        })),
+
+        gallery: gallery.map((img) => ({
+          caption: img.caption,
+          fileName: img.file?.name || null,
+        })),
       };
 
       if (useClientAsBeneficiary) {
@@ -1178,18 +1213,56 @@ export default function CreateGuidePage() {
         setBeneficiaryNotificationPreferences={setBeneficiaryNotificationPreferences}
       />
 
-      <BasicInfoSection
-        agency={agency}
-        setAgency={setAgency}
-        observations={observations}
-        setObservations={setObservations}
-        tariffHeading={tariffHeading}
-        setTariffHeading={setTariffHeading}
-        internalComments={internalComments}
-        setInternalComments={setInternalComments}
-        internalCommentsMax={INTERNAL_COMMENTS_MAX}
-        senderCountry={senderClient?.profile?.cityLabel || ""}
-      />
+      <div className="card p-2">
+        <div className="flex gap-2">
+          {[
+            { key: "basic", label: "Básico" },
+            { key: "documents", label: "Documentos" },
+            { key: "gallery", label: "Galería" },
+          ].map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => setActiveTab(tab.key as GuideTab)}
+              className={`px-4 py-2 rounded-md text-sm font-medium transition ${activeTab === tab.key
+                ? "bg-blue-600 text-white"
+                : "text-gray-600 hover:bg-gray-100"
+                }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {activeTab === "basic" && (
+        <BasicInfoSection
+          agency={agency}
+          setAgency={setAgency}
+          observations={observations}
+          setObservations={setObservations}
+          tariffHeading={tariffHeading}
+          setTariffHeading={setTariffHeading}
+          internalComments={internalComments}
+          setInternalComments={setInternalComments}
+          internalCommentsMax={INTERNAL_COMMENTS_MAX}
+          senderCountry={senderClient?.profile?.cityLabel || ""}
+        />
+      )}
+
+      {activeTab === "documents" && (
+        <DocumentsSection
+          documents={documents}
+          setDocuments={setDocuments}
+        />
+      )}
+
+      {activeTab === "gallery" && (
+        <GallerySection
+          gallery={gallery}
+          setGallery={setGallery}
+        />
+      )}
 
       <PackagesSection
         packages={packages}
