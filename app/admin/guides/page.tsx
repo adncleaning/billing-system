@@ -15,6 +15,8 @@ import {
   X,
   CheckSquare,
   Square,
+  Ban,
+  ChevronDown,
 } from "lucide-react";
 
 interface ClientAddress {
@@ -127,7 +129,39 @@ interface Guide {
   senderSecondary?: string | null;
   recipientName?: string | null;
   recipientSecondary?: string | null;
+  createdBy?: { _id?: string; username?: string; fullName?: string; email?: string } | string | null;
 }
+
+interface UserOption {
+  _id: string;
+  fullName?: string;
+  username?: string;
+  email?: string;
+}
+
+interface CityOption {
+  _id: string;
+  label?: string;
+  country?: string;
+  department?: string;
+  city?: string;
+  postalCode?: string | null;
+}
+
+interface ConsolidatedOption {
+  _id: string;
+  number?: string;
+  description?: string;
+}
+
+type ProcessFilter =
+  | "ALL"
+  | "INVOICED"
+  | "PENDING_INVOICE"
+  | "CONSOLIDATED"
+  | "PENDING_CONSOLIDATE"
+  | "CONFIRMED"
+  | "PENDING_CONFIRM";
 
 type ApiResponse<T> = { success: boolean; message?: string } & T;
 
@@ -160,6 +194,44 @@ function buildQuery(params: Record<string, any>) {
 
 const ALL = "ALL";
 
+type SelectOption = {
+  value: string;
+  label: string;
+};
+
+function FilterSelect({
+  value,
+  options,
+  placeholder = "Todos",
+  emptyValue = ALL,
+  onChange,
+}: {
+  value: string;
+  options: SelectOption[];
+  placeholder?: string;
+  emptyValue?: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="relative">
+      <select
+        className="input w-full appearance-none bg-white pr-9 text-gray-700"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        <option value={emptyValue}>{placeholder}</option>
+
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+
+      <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
+    </div>
+  );
+}
 export default function GuidesPage() {
   const { token } = useAuth();
   const { showToast } = useToast();
@@ -192,6 +264,17 @@ export default function GuidesPage() {
   const [userFilter, setUserFilter] = useState(ALL);
 
   const [onlyUnprocessed, setOnlyUnprocessed] = useState(false);
+  const [processFilter, setProcessFilter] = useState<ProcessFilter>(ALL as ProcessFilter);
+
+  // catalogs for searchable filters
+  const [cities, setCities] = useState<CityOption[]>([]);
+  const [users, setUsers] = useState<UserOption[]>([]);
+  const [consolidatedList, setConsolidatedList] = useState<ConsolidatedOption[]>([]);
+
+  // row selection + dropdown actions
+  const [selectedGuideIds, setSelectedGuideIds] = useState<Record<string, boolean>>({});
+  const [bulkAction, setBulkAction] = useState("");
+  const [reportType, setReportType] = useState("");
 
   // pagination server-side
   const [currentPage, setCurrentPage] = useState(1);
@@ -239,6 +322,75 @@ export default function GuidesPage() {
 
   const yesNoOptions = [ALL, "YES", "NO"];
 
+  const getUserLabel = (u: UserOption) =>
+    String(u.fullName || u.username || u.email || u._id || "").trim();
+
+  const destCountryOptions: SelectOption[] = [
+    { value: "COLOMBIA", label: "Colombia" },
+    { value: "ECUADOR", label: "Ecuador" },
+  ];
+
+  const destStateOptions = useMemo<SelectOption[]>(() => {
+    return Array.from(
+      new Set(cities.map((c) => String(c.department || "").trim()).filter(Boolean))
+    )
+      .sort((a, b) => a.localeCompare(b))
+      .map((department) => ({
+        value: department,
+        label: department,
+      }));
+  }, [cities]);
+
+  const consolidatedOptions = useMemo<SelectOption[]>(() => {
+    return [
+      { value: "YES", label: "Sí" },
+      { value: "NO", label: "No" },
+      ...consolidatedList.map((c) => ({
+        value: String(c.number || c._id),
+        label: c.number
+          ? `${c.number}${c.description ? ` - ${c.description}` : ""}`
+          : c.description || c._id,
+      })),
+    ];
+  }, [consolidatedList]);
+
+  const userOptions = useMemo<SelectOption[]>(() => {
+    return [
+      { value: "ME", label: "Mi usuario" },
+      ...users.map((u) => ({
+        value: u._id,
+        label: getUserLabel(u),
+      })),
+    ];
+  }, [users]);
+
+  const fetchCatalogs = async () => {
+    try {
+      const [citiesResp, usersResp, consResp] = await Promise.allSettled([
+        Api("GET", "cities", null, router),
+        Api("GET", "auth/users", null, router),
+        Api("GET", "consolidated?limit=500", null, router),
+      ]);
+
+      if (citiesResp.status === "fulfilled") {
+        const data: any = citiesResp.value;
+        setCities(Array.isArray(data?.cities) ? data.cities : []);
+      }
+
+      if (usersResp.status === "fulfilled") {
+        const data: any = usersResp.value;
+        setUsers(Array.isArray(data?.users) ? data.users : []);
+      }
+
+      if (consResp.status === "fulfilled") {
+        const data: any = consResp.value;
+        setConsolidatedList(Array.isArray(data?.data) ? data.data : []);
+      }
+    } catch (_) {
+      // Los catálogos no deben bloquear la lista de guías.
+    }
+  };
+
   const fetchGuides = async (opts?: { page?: number }) => {
     try {
       setLoading(true);
@@ -262,6 +414,7 @@ export default function GuidesPage() {
         finalized: finalized === ALL ? "" : finalized,
         cancellationStatus: cancellationStatus === ALL ? "" : cancellationStatus,
         onlyUnprocessed,
+        processFilter: processFilter === ALL ? "" : processFilter,
         page: pageToLoad,
         pageSize: PAGE_SIZE,
       });
@@ -350,7 +503,10 @@ export default function GuidesPage() {
   };
 
   useEffect(() => {
-    if (token) fetchGuides({ page: 1 });
+    if (token) {
+      fetchGuides({ page: 1 });
+      fetchCatalogs();
+    }
     fetchNextGuideNumber();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
@@ -381,6 +537,7 @@ export default function GuidesPage() {
     cancellationStatus,
     userFilter,
     onlyUnprocessed,
+    processFilter,
   ]);
 
   const totalPages = useMemo(() => {
@@ -416,6 +573,10 @@ export default function GuidesPage() {
     setCancellationStatus(ALL);
     setUserFilter(ALL);
     setOnlyUnprocessed(false);
+    setProcessFilter(ALL as ProcessFilter);
+    setBulkAction("");
+    setReportType("");
+    setSelectedGuideIds({});
     setCurrentPage(1);
   };
 
@@ -855,10 +1016,164 @@ export default function GuidesPage() {
     }
   };
 
+
+  const currentSelectedIds = useMemo(() => {
+    return Object.entries(selectedGuideIds)
+      .filter(([, checked]) => checked)
+      .map(([id]) => id);
+  }, [selectedGuideIds]);
+
+  const toggleGuideSelection = (id: string) => {
+    setSelectedGuideIds((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const toggleAllGuidesOnPage = () => {
+    const allSelected = guides.length > 0 && guides.every((g) => selectedGuideIds[g._id]);
+    setSelectedGuideIds((prev) => {
+      const next = { ...prev };
+      guides.forEach((g) => {
+        if (allSelected) delete next[g._id];
+        else next[g._id] = true;
+      });
+      return next;
+    });
+  };
+
+  const openBulkStatusFromSelection = () => {
+    if (!currentSelectedIds.length) {
+      showToast("Selecciona al menos una guía.", "error");
+      return;
+    }
+    setBulkSelected(Object.fromEntries(currentSelectedIds.map((id) => [id, true])));
+    setBulkSearch("");
+    setBulkStatus("");
+    setBulkComment("");
+    setBulkOpen(true);
+  };
+
+  const cancelGuide = async (guideId: string) => {
+    const ok = window.confirm("¿Seguro que deseas anular esta guía?");
+    if (!ok) return;
+
+    try {
+      const resp = (await Api(
+        "PATCH",
+        `guides/${guideId}/active`,
+        { isActive: false },
+        router
+      )) as ApiResponse<{ guide?: Guide }>;
+
+      if (!resp?.success) throw new Error(resp?.message || "Error anulando guía");
+
+      showToast("Guía anulada correctamente", "success");
+      fetchGuides({ page: currentPage });
+    } catch (e: any) {
+      showToast(e?.message || "Error anulando guía", "error");
+    }
+  };
+
+  const handleBulkAction = async (action: string) => {
+    setBulkAction(action);
+    if (!action) return;
+
+    if (action === "status") {
+      openBulkStatusFromSelection();
+      setBulkAction("");
+      return;
+    }
+
+    if (!currentSelectedIds.length) {
+      showToast("Selecciona al menos una guía.", "error");
+      setBulkAction("");
+      return;
+    }
+
+    if (action === "invoice") {
+      try {
+        const resp = (await Api(
+          "POST",
+          "guides/bulk-invoice",
+          { guideIds: currentSelectedIds },
+          router
+        )) as ApiResponse<{ updatedGuides?: number }>;
+        if (!resp?.success) throw new Error(resp?.message || "Error facturando guías");
+        showToast(`Facturadas ${resp.updatedGuides ?? currentSelectedIds.length} guías`, "success");
+        fetchGuides({ page: currentPage });
+      } catch (e: any) {
+        showToast(e?.message || "Falta implementar POST /guides/bulk-invoice", "error");
+      }
+    }
+
+    if (action === "delivery-note") {
+      showToast("Para Nota de Entrega se requiere endpoint de carga masiva con archivo.", "error");
+    }
+
+    setBulkAction("");
+  };
+
+  const downloadReport = async (format: "excel" | "pdf") => {
+    try {
+      const qs = buildQuery({
+        q,
+        searchType,
+        destCountry: destCountry === ALL ? "" : destCountry,
+        destState: destState === ALL ? "" : destState,
+        consolidated: consolidated === ALL ? "" : consolidated,
+        dateType,
+        from: fromDate,
+        to: toDate,
+        shippingType: shippingType === ALL ? "" : shippingType,
+        agency: agency === ALL ? "" : agency,
+        status: status === ALL ? "" : status,
+        agent: agent === ALL ? "" : agent,
+        createdBy: userFilter === ALL ? "" : userFilter,
+        finalized: finalized === ALL ? "" : finalized,
+        cancellationStatus: cancellationStatus === ALL ? "" : cancellationStatus,
+        onlyUnprocessed,
+        processFilter: processFilter === ALL ? "" : processFilter,
+        format,
+      });
+
+      const authToken = token || localStorage.getItem("token");
+      const res = await fetch(`${API_URL}/guides/reports/export${qs}`, {
+        headers: { Authorization: `jwt ${authToken}` },
+      });
+
+      if (!res.ok) throw new Error(`Falta implementar GET /guides/reports/export?format=${format}`);
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `guides_report.${format === "excel" ? "xlsx" : "pdf"}`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      showToast(e?.message || "Error generando reporte", "error");
+    } finally {
+      setReportType("");
+    }
+  };
+
   // =========================
   // Table columns
   // =========================
   const columns = [
+    {
+      key: "select",
+      label: "",
+      render: (_: any, row: Guide) => (
+        <button type="button" onClick={() => toggleGuideSelection(row._id)} title="Seleccionar guía">
+          {selectedGuideIds[row._id] ? (
+            <CheckSquare className="h-4 w-4 text-blue-600" />
+          ) : (
+            <Square className="h-4 w-4 text-gray-400" />
+          )}
+        </button>
+      ),
+    },
     {
       key: "guideNumber",
       label: "Número",
@@ -900,6 +1215,15 @@ export default function GuidesPage() {
               title="Editar"
             >
               <Pencil className="h-4 w-4 text-gray-700" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => cancelGuide(row._id)}
+              className="p-1.5 rounded border hover:bg-red-50"
+              title="Anular guía"
+            >
+              <Ban className="h-4 w-4 text-red-600" />
             </button>
           </div>
 
@@ -1094,71 +1418,62 @@ export default function GuidesPage() {
 
             <div>
               <label className="text-xs text-gray-500">Tipo de Búsqueda:</label>
-              <select
-                className="input"
+              <FilterSelect
                 value={searchType}
-                onChange={(e) => setSearchType(e.target.value as any)}
-              >
-                <option value="all">Todos</option>
-                <option value="sender">Remitente</option>
-                <option value="recipient">Destinatario</option>
-                <option value="phone">Teléfono</option>
-                <option value="email">Email</option>
-                <option value="identification">Identificación</option>
-              </select>
+                emptyValue="all"
+                placeholder="Todos"
+                options={[
+                  { value: "sender", label: "Remitente" },
+                  { value: "recipient", label: "Destinatario" },
+                  { value: "phone", label: "Teléfono" },
+                  { value: "email", label: "Email" },
+                  { value: "identification", label: "Identificación" },
+                ]}
+                onChange={(value) => setSearchType(value as any)}
+              />
             </div>
 
             <div>
               <label className="text-xs text-gray-500">Des.País:</label>
-              <select
-                className="input"
+              <FilterSelect
                 value={destCountry}
-                onChange={(e) => setDestCountry(e.target.value)}
-              >
-                <option value={ALL}>Todos</option>
-                <option value="COLOMBIA">Colombia</option>
-                <option value="ECUADOR">Ecuador</option>
-              </select>
+                options={destCountryOptions}
+                placeholder="Todos"
+                onChange={setDestCountry}
+              />
             </div>
 
             <div>
               <label className="text-xs text-gray-500">Des.Estado:</label>
-              <select
-                className="input"
+              <FilterSelect
                 value={destState}
-                onChange={(e) => setDestState(e.target.value)}
-              >
-                <option value={ALL}>Todos</option>
-                <option value="VALLE DEL CAUCA">Valle del Cauca</option>
-                <option value="PICHINCHA">Pichincha</option>
-              </select>
+                options={destStateOptions}
+                placeholder="Todos"
+                onChange={setDestState}
+              />
             </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
             <div>
               <label className="text-xs text-gray-500">Consolidado:</label>
-              <select
-                className="input"
+              <FilterSelect
                 value={consolidated}
-                onChange={(e) => setConsolidated(e.target.value)}
-              >
-                <option value={ALL}>Todos</option>
-                <option value="YES">Sí</option>
-                <option value="NO">No</option>
-              </select>
+                options={consolidatedOptions}
+                placeholder="Todos / número consolidado"
+                onChange={setConsolidated}
+              />
             </div>
 
             <div>
               <label className="text-xs text-gray-500">Tipo de Fecha:</label>
-              <select
-                className="input"
+              <FilterSelect
                 value={dateType}
-                onChange={(e) => setDateType(e.target.value as any)}
-              >
-                <option value="createdAt">Creación</option>
-                <option value="updatedAt">Actualización</option>
-              </select>
+                emptyValue="createdAt"
+                placeholder="Creación"
+                options={[{ value: "updatedAt", label: "Actualización" }]}
+                onChange={(value) => setDateType(value as any)}
+              />
             </div>
 
             <div>
@@ -1183,119 +1498,152 @@ export default function GuidesPage() {
 
             <div>
               <label className="text-xs text-gray-500">Tipo de Envío:</label>
-              <select
-                className="input"
+              <FilterSelect
                 value={shippingType}
-                onChange={(e) => setShippingType(e.target.value)}
-              >
-                {shippingTypeOptions.map((o) => (
-                  <option key={o} value={o}>
-                    {o === ALL ? "Todos" : o}
-                  </option>
-                ))}
-              </select>
+                options={shippingTypeOptions
+                  .filter((o) => o !== ALL)
+                  .map((o) => ({ value: o, label: o }))}
+                placeholder="Todos"
+                onChange={setShippingType}
+              />
             </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
             <div>
               <label className="text-xs text-gray-500">Agencia:</label>
-              <select
-                className="input"
+              <FilterSelect
                 value={agency}
-                onChange={(e) => setAgency(e.target.value)}
-              >
-                <option value={ALL}>Todas</option>
-                <option value="Via logistics">Via logistics</option>
-              </select>
+                options={[{ value: "Via logistics", label: "Via logistics" }]}
+                placeholder="Todas"
+                onChange={setAgency}
+              />
             </div>
 
             <div>
               <label className="text-xs text-gray-500">Agente:</label>
-              <select className="input" value={agent} onChange={(e) => setAgent(e.target.value)}>
-                <option value={ALL}>Todos</option>
-                <option value="AGENT_1">Agent 1</option>
-              </select>
+              <FilterSelect
+                value={agent}
+                options={[{ value: "AGENT_1", label: "Agent 1" }]}
+                placeholder="Todos"
+                onChange={setAgent}
+              />
             </div>
 
             <div>
               <label className="text-xs text-gray-500">Des.Estado (Status):</label>
-              <select className="input" value={status} onChange={(e) => setStatus(e.target.value)}>
-                <option value={ALL}>Todos</option>
-                {statusOptions.map((o) => (
-                  <option key={o} value={o}>
-                    {o}
-                  </option>
-                ))}
-              </select>
+              <FilterSelect
+                value={status}
+                options={statusOptions.map((o) => ({ value: o, label: o }))}
+                placeholder="Todos"
+                onChange={setStatus}
+              />
             </div>
 
             <div>
               <label className="text-xs text-gray-500">Finalizado:</label>
-              <select
-                className="input"
+              <FilterSelect
                 value={finalized}
-                onChange={(e) => setFinalized(e.target.value)}
-              >
-                {yesNoOptions.map((o) => (
-                  <option key={o} value={o}>
-                    {o === ALL ? "Todos" : o === "YES" ? "Sí" : "No"}
-                  </option>
-                ))}
-              </select>
+                options={yesNoOptions
+                  .filter((o) => o !== ALL)
+                  .map((o) => ({ value: o, label: o === "YES" ? "Sí" : "No" }))}
+                placeholder="Todos"
+                onChange={setFinalized}
+              />
             </div>
 
             <div>
               <label className="text-xs text-gray-500">Estatus de Anulación:</label>
-              <select
-                className="input"
+              <FilterSelect
                 value={cancellationStatus}
-                onChange={(e) => setCancellationStatus(e.target.value)}
-              >
-                <option value={ALL}>Todas</option>
-                <option value="REQUESTED">Solicitada</option>
-                <option value="APPROVED">Aprobada</option>
-                <option value="REJECTED">Rechazada</option>
-              </select>
+                options={[
+                  { value: "REQUESTED", label: "Solicitada" },
+                  { value: "APPROVED", label: "Aprobada" },
+                  { value: "REJECTED", label: "Rechazada" },
+                ]}
+                placeholder="Todas"
+                onChange={setCancellationStatus}
+              />
             </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
             <div>
               <label className="text-xs text-gray-500">Usuario:</label>
-              <select
-                className="input"
+              <FilterSelect
                 value={userFilter}
-                onChange={(e) => setUserFilter(e.target.value)}
-              >
-                <option value={ALL}>Buscar</option>
-                <option value="ME">Mi usuario</option>
-              </select>
+                options={userOptions}
+                placeholder="Buscar"
+                onChange={setUserFilter}
+              />
             </div>
 
-            <div className="flex items-end gap-3">
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setOnlyUnprocessed((v) => !v)}
-                  className={`w-12 h-6 rounded-full relative transition ${onlyUnprocessed ? "bg-blue-600" : "bg-gray-300"
-                    }`}
-                  aria-label="Solo no procesados"
-                >
-                  <span
-                    className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition ${onlyUnprocessed ? "left-6" : "left-1"
-                      }`}
-                  />
-                </button>
-                <span className="text-sm text-gray-600">Solo no procesados</span>
-              </div>
+            <div>
+              <label className="text-xs text-gray-500">Proceso:</label>
+              <FilterSelect
+                value={processFilter}
+                options={[
+                  { value: "INVOICED", label: "Facturadas" },
+                  { value: "PENDING_INVOICE", label: "Pend. Facturar" },
+                  { value: "CONSOLIDATED", label: "Consolidadas" },
+                  { value: "PENDING_CONSOLIDATE", label: "Pend. Consolidar" },
+                  { value: "CONFIRMED", label: "Confirmadas" },
+                  { value: "PENDING_CONFIRM", label: "Pend. Confirmar" },
+                ]}
+                placeholder="Todos"
+                onChange={(value) => setProcessFilter(value as ProcessFilter)}
+              />
             </div>
 
-            <div className="md:col-span-3 flex items-end justify-end gap-3">
-              <button type="button" onClick={clearFilters} className="btn-outline">
-                Limpiar Filtros
+            <div className="md:col-span-3" />
+          </div>
+
+          <div className="flex flex-col md:flex-row md:items-center gap-3 border-t pt-4">
+            <label className="flex items-center gap-2 text-sm text-gray-600">
+              <button type="button" onClick={toggleAllGuidesOnPage} className="p-1">
+                {guides.length > 0 && guides.every((g) => selectedGuideIds[g._id]) ? (
+                  <CheckSquare className="h-5 w-5 text-blue-600" />
+                ) : (
+                  <Square className="h-5 w-5 text-gray-400" />
+                )}
               </button>
+              Todas / seleccionadas: {currentSelectedIds.length}
+            </label>
+
+            <div className="md:w-[220px]">
+              <FilterSelect
+                value={bulkAction}
+                emptyValue=""
+                placeholder="Acciones en Lote"
+                options={[
+                  { value: "status", label: "Nuevo Estatus" },
+                  { value: "invoice", label: "Facturar" },
+                  { value: "delivery-note", label: "Nota de Entrega" },
+                ]}
+                onChange={handleBulkAction}
+              />
             </div>
+
+            <div className="md:w-[190px]">
+              <FilterSelect
+                value={reportType}
+                emptyValue=""
+                placeholder="Reportes"
+                options={[
+                  { value: "excel", label: "Exportar a Excel" },
+                  { value: "pdf", label: "Exportar a PDF" },
+                ]}
+                onChange={(value) => {
+                  const nextValue = value as "excel" | "pdf" | "";
+                  setReportType(nextValue);
+                  if (nextValue) downloadReport(nextValue);
+                }}
+              />
+            </div>
+
+            <button type="button" onClick={clearFilters} className="btn-outline">
+              Limpiar Filtros
+            </button>
           </div>
 
           <div className="w-full flex flex-col md:flex-row gap-3">
@@ -1407,18 +1755,13 @@ export default function GuidesPage() {
 
                 <div className="md:col-span-1">
                   <label className="text-xs text-gray-500">Nuevo Status</label>
-                  <select
-                    className="input"
+                  <FilterSelect
                     value={bulkStatus}
-                    onChange={(e) => setBulkStatus(e.target.value)}
-                  >
-                    <option value="">Seleccionar...</option>
-                    {statusOptions.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
-                      </option>
-                    ))}
-                  </select>
+                    emptyValue=""
+                    placeholder="Seleccionar..."
+                    options={statusOptions.map((s) => ({ value: s, label: s }))}
+                    onChange={setBulkStatus}
+                  />
                 </div>
 
                 <div className="md:col-span-1">
