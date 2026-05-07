@@ -1089,19 +1089,19 @@ export default function GuidesPage() {
     }
 
     if (action === "invoice") {
-      try {
-        const resp = (await Api(
-          "POST",
-          "guides/bulk-invoice",
-          { guideIds: currentSelectedIds },
-          router
-        )) as ApiResponse<{ updatedGuides?: number }>;
-        if (!resp?.success) throw new Error(resp?.message || "Error facturando guías");
-        showToast(`Facturadas ${resp.updatedGuides ?? currentSelectedIds.length} guías`, "success");
-        fetchGuides({ page: currentPage });
-      } catch (e: any) {
-        showToast(e?.message || "Falta implementar POST /guides/bulk-invoice", "error");
+      if (!currentSelectedIds.length) {
+        showToast("Selecciona al menos una guía.", "error");
+        setBulkAction("");
+        return;
       }
+
+      // Redirigir a BillsCreate con múltiples guías
+      router.push(
+        `/admin/bills/create?guideIds=${currentSelectedIds.join(",")}`
+      );
+
+      setBulkAction("");
+      return;
     }
 
     if (action === "delivery-note") {

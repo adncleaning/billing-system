@@ -387,6 +387,7 @@ export default function BillsCreatePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const guideIdFromQuery = searchParams.get("guideId") || "";
+  const guideIdsFromQuery = searchParams.get("guideIds") || "";
   const [bootstrappingFromGuide, setBootstrappingFromGuide] = useState(false);
 
   /** Client selector */
@@ -608,6 +609,107 @@ export default function BillsCreatePage() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [guideIdFromQuery]);
+
+  useEffect(() => {
+    if (!guideIdsFromQuery) return;
+
+    const ids = guideIdsFromQuery
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    if (!ids.length) return;
+
+    (async () => {
+      try {
+        setBootstrappingFromGuide(true);
+        setError(null);
+
+        // cargar todas las guías en paralelo
+        const guideResults = await Promise.allSettled(
+          ids.map((id) => fetchGuideById(id))
+        );
+
+        const loadedGuides = guideResults
+          .filter(
+            (r): r is PromiseFulfilledResult<GuideLite> =>
+              r.status === "fulfilled" && !!r.value
+          )
+          .map((r) => r.value);
+
+        if (!loadedGuides.length) {
+          setError("No se pudieron cargar las guías seleccionadas.");
+          return;
+        }
+
+        // usar el cliente de la primera guía
+        const senderClientId = loadedGuides[0]?.senderClient?._id;
+
+        if (!senderClientId) {
+          setError("Las guías no tienen remitente asociado.");
+          return;
+        }
+
+        const client = await fetchClientById(senderClientId);
+
+        if (!client?._id) {
+          setError("No se pudo cargar el cliente de las guías.");
+          return;
+        }
+
+        setSelectedClient(client);
+
+        // cargar guías facturables
+        const data = await apiFetch(
+          `/bills/unbilled-guides/list?clientId=${encodeURIComponent(
+            senderClientId
+          )}`,
+          {},
+          router
+        );
+
+        const list = (data?.data || data?.guides || []) as GuideLite[];
+        const safeList = Array.isArray(list) ? list : [];
+
+        setUnbilledGuides(safeList);
+
+        // validar cuáles siguen disponibles
+        const billableIds = new Set(safeList.map((g) => g._id));
+
+        const toAdd = loadedGuides.filter((g) =>
+          billableIds.has(g._id)
+        );
+
+        const skipped = loadedGuides.filter(
+          (g) => !billableIds.has(g._id)
+        );
+
+        if (skipped.length) {
+          setError(
+            `${skipped.length} guía(s) ya están facturadas o no disponibles y fueron omitidas.`
+          );
+        }
+
+        if (toAdd.length) {
+          const enriched = toAdd.map(
+            (g) => safeList.find((s) => s._id === g._id) ?? g
+          );
+
+          setSelectedGuideIds(enriched.map((g) => g._id));
+
+          mergeGuidesIntoBill(enriched);
+        }
+      } catch (e: any) {
+        setError(
+          e?.message || "Error cargando guías para facturación."
+        );
+      } finally {
+        setBootstrappingFromGuide(false);
+      }
+    })();
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [guideIdsFromQuery]);
 
   /** -------------------- Handlers -------------------- */
   function addCatalogService(svc: ServiceCatalogItem) {
