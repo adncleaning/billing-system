@@ -137,6 +137,7 @@ interface UserOption {
   fullName?: string;
   username?: string;
   email?: string;
+  type?: string;
 }
 
 interface CityOption {
@@ -379,7 +380,15 @@ export default function GuidesPage() {
 
       if (usersResp.status === "fulfilled") {
         const data: any = usersResp.value;
-        setUsers(Array.isArray(data?.users) ? data.users : []);
+        const onlyAdminOrDriver = Array.isArray(data?.users)
+          ? data.users.filter((u: UserOption) =>
+            ["ADMIN"].includes(
+              String(u.type || "").toUpperCase()
+            )
+          )
+          : [];
+
+        setUsers(onlyAdminOrDriver);
       }
 
       if (consResp.status === "fulfilled") {
@@ -1113,42 +1122,37 @@ export default function GuidesPage() {
 
   const downloadReport = async (format: "excel" | "pdf") => {
     try {
+      if (!currentSelectedIds.length) {
+        showToast("Selecciona al menos una guía para exportar.", "error");
+        setReportType("");
+        return;
+      }
+
       const qs = buildQuery({
-        q,
-        searchType,
-        destCountry: destCountry === ALL ? "" : destCountry,
-        destState: destState === ALL ? "" : destState,
-        consolidated: consolidated === ALL ? "" : consolidated,
-        dateType,
-        from: fromDate,
-        to: toDate,
-        shippingType: shippingType === ALL ? "" : shippingType,
-        agency: agency === ALL ? "" : agency,
-        status: status === ALL ? "" : status,
-        agent: agent === ALL ? "" : agent,
-        createdBy: userFilter === ALL ? "" : userFilter,
-        finalized: finalized === ALL ? "" : finalized,
-        cancellationStatus: cancellationStatus === ALL ? "" : cancellationStatus,
-        onlyUnprocessed,
-        processFilter: processFilter === ALL ? "" : processFilter,
+        guideIds: currentSelectedIds.join(","),
         format,
       });
 
       const authToken = token || localStorage.getItem("token");
+
       const res = await fetch(`${API_URL}/guides/reports/export${qs}`, {
         headers: { Authorization: `jwt ${authToken}` },
       });
 
-      if (!res.ok) throw new Error(`Falta implementar GET /guides/reports/export?format=${format}`);
+      if (!res.ok) {
+        throw new Error(`Error generando reporte ${format}`);
+      }
 
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
+
       link.href = url;
-      link.download = `guides_report.${format === "excel" ? "xlsx" : "pdf"}`;
+      link.download = `guides_selected.${format === "excel" ? "xlsx" : "pdf"}`;
       document.body.appendChild(link);
       link.click();
       link.remove();
+
       URL.revokeObjectURL(url);
     } catch (e: any) {
       showToast(e?.message || "Error generando reporte", "error");
